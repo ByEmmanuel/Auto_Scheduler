@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auto Scheduler — Dashboard</title>
+  <meta name="description" content="Dashboard de tareas automatizadas desde Google Classroom sincronizadas con Google Calendar">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header__logo">
+      <div class="header__icon">🗓️</div>
+      <div>
+        <div class="header__title">Auto Scheduler</div>
+      </div>
+    </div>
+
+    <div class="header__stats" id="stats">
+      <div class="stat">
+        <span class="stat__dot stat__dot--blue"></span>
+        <span id="stat-total">0</span> tareas
+      </div>
+      <div class="stat">
+        <span class="stat__dot stat__dot--red"></span>
+        <span id="stat-urgent">0</span> urgentes
+      </div>
+      <div class="stat">
+        <span class="stat__dot stat__dot--green"></span>
+        <span id="stat-normal">0</span> normales
+      </div>
+    </div>
+
+    <button class="btn-verify" id="btn-verify" onclick="verifySync()">
+      <span class="btn-verify__icon">🔄</span>
+      <span class="btn-verify__spinner"></span>
+      <span class="btn-verify__text">Verificar y Sincronizar</span>
+    </button>
+  </header>
+
+  <!-- ── Board ───────────────────────────────────────────────────── -->
+  <main class="board" id="board">
+    <div class="empty-state" id="empty-state">
+      <div class="empty-state__icon">📋</div>
+      <div class="empty-state__title">Cargando tareas…</div>
+      <div class="empty-state__text">Conectando con la base de datos local.</div>
+    </div>
+  </main>
+
+  <!-- ── Modal overlay ───────────────────────────────────────────── -->
+  <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+    <div class="modal" id="modal" onclick="event.stopPropagation()">
+      <button class="modal__close" onclick="closeModal()">&times;</button>
+
+      <div class="modal__body">
+        <div class="modal__badge" id="modal-badge"></div>
+        <h2 class="modal__title" id="modal-title"></h2>
+        <div class="modal__course" id="modal-course"></div>
+
+        <div class="modal__meta">
+          <div class="modal__meta-item" id="modal-date">
+            <span class="modal__meta-icon">📅</span>
+            <span id="modal-date-text"></span>
+          </div>
+          <div class="modal__meta-item" id="modal-source-row">
+            <span class="modal__meta-icon">📦</span>
+            <span id="modal-source-text"></span>
+          </div>
+        </div>
+
+        <div class="modal__section" id="modal-desc-section">
+          <div class="modal__section-label">// DESCRIPCION</div>
+          <div class="modal__desc" id="modal-desc"></div>
+        </div>
+
+        <div class="modal__section" id="modal-link-section">
+          <div class="modal__section-label">// ENLACE</div>
+          <a class="modal__link" id="modal-link" href="#" target="_blank" rel="noopener">
+            [ ABRIR EN CLASSROOM → ]
+          </a>
+        </div>
+
+        <div class="modal__section">
+          <div class="modal__section-label">// MIS NOTAS</div>
+          <textarea class="modal__textarea" id="modal-notes"
+                    placeholder="Escribe tus notas aquí..." rows="4"></textarea>
+        </div>
+
+        <div class="modal__actions">
+          <button class="modal__btn modal__btn--save" id="btn-save" onclick="saveNotes()">
+            <span class="modal__btn-text">[ GUARDAR + SYNC ]</span>
+            <span class="modal__btn-spinner"></span>
+          </button>
+          <button class="modal__btn modal__btn--cancel" onclick="closeModal()">[ CERRAR ]</button>
+        </div>
+
+        <div class="modal__toast" id="modal-toast"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Toast ───────────────────────────────────────────────────── -->
+  <div class="toast" id="toast">
+    <div class="toast__header" id="toast-header"></div>
+    <div class="toast__body" id="toast-body"></div>
+  </div>
+
+  <script>
+    // ── State ────────────────────────────────────────────────────────────
+    let currentTask = null;
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+    const COURSE_COLORS = {};
+    let colorIndex = 0;
+
+    function getCourseColor(course) {
+      if (!COURSE_COLORS[course]) {
+        COURSE_COLORS[course] = `course-color-${colorIndex % 8}`;
+        colorIndex++;
+      }
+      return COURSE_COLORS[course];
+    }
+
+    const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+    function formatDate(dateStr) {
+      if (dateStr === 'Sin fecha') return { main: 'Sin fecha', sub: '' };
+      const d = new Date(dateStr + 'T00:00:00');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const diff = Math.round((d - today) / (1000 * 60 * 60 * 24));
+
+      let label = '';
+      if (diff === 0) label = '🔥 Hoy';
+      else if (diff === 1) label = 'Mañana';
+      else if (diff < 0) label = `Hace ${Math.abs(diff)} día${Math.abs(diff) > 1 ? 's' : ''}`;
+      else if (diff <= 7) label = `En ${diff} días`;
+      else label = `${d.getDate()} ${MONTH_NAMES[d.getMonth()]}`;
+
+      const dayName = DAY_NAMES[d.getDay()];
+      const sub = `${dayName}, ${d.getDate()} ${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+
+      return { main: label, sub };
+    }
+
+    function formatTime(dateStr) {
+      if (!dateStr) return '';
+      const d = new Date(dateStr);
+      return d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatFullDate(dateStr) {
+      if (!dateStr) return 'Sin fecha';
+      const d = new Date(dateStr);
+      return `${DAY_NAMES[d.getDay()]}, ${d.getDate()} ${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()} a las ${d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`;
+    }
+
+    // ── Render ───────────────────────────────────────────────────────────
+    function renderBoard(data) {
+      const board = document.getElementById('board');
+
+      if (!data.columns || data.columns.length === 0) {
+        board.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state__icon">✅</div>
+            <div class="empty-state__title">¡Todo al día!</div>
+            <div class="empty-state__text">No hay tareas pendientes. Presiona "Verificar y Sincronizar" para buscar nuevas tareas.</div>
+          </div>`;
+        return;
+      }
+
+      board.innerHTML = '';
+
+      let totalUrgent = 0;
+      let totalNormal = 0;
+
+      data.columns.forEach((col, colIdx) => {
+        const { main, sub } = formatDate(col.date);
+        const urgent = col.tasks.filter(t => t.is_urgent).length;
+        const normal = col.tasks.length - urgent;
+        totalUrgent += urgent;
+        totalNormal += normal;
+
+        const column = document.createElement('div');
+        column.className = 'column';
+        column.style.animationDelay = `${colIdx * 0.08}s`;
+
+        column.innerHTML = `
+          <div class="column__header">
+            <div>
+              <div class="column__date">${main}</div>
+              <div class="column__date-sub">${sub}</div>
+            </div>
+            <div class="column__count">${col.tasks.length}</div>
+          </div>
+          <div class="column__cards" id="col-cards-${colIdx}"></div>
+        `;
+
+        board.appendChild(column);
+
+        const cardsContainer = column.querySelector(`#col-cards-${colIdx}`);
+
+        col.tasks.forEach((task, cardIdx) => {
+          const card = document.createElement('div');
+          card.className = `card ${task.is_urgent ? 'card--urgent' : ''}`;
+          card.style.animationDelay = `${(colIdx * 0.08) + (cardIdx * 0.05)}s`;
+          card.onclick = () => openModal(task);
+
+          const badgeClass = task.is_urgent ? 'card__badge--urgent' : 'card__badge--normal';
+          const badgeText = task.is_urgent ? '🔴 Urgente' : '📌 Normal';
+          const sourceLabel = task.source === 'classroom' ? 'Classroom' : 'Manual';
+          const courseColor = getCourseColor(task.course);
+          const hasNotes = task.notes && task.notes.trim().length > 0;
+
+          card.innerHTML = `
+            <div class="card__badge ${badgeClass}">${badgeText}</div>
+            <div class="card__title">${task.title}</div>
+            <div class="card__course">
+              <span class="card__course-dot ${courseColor}"></span>
+              ${task.course}
+            </div>
+            ${hasNotes ? `<div class="card__has-notes">✏️ Tiene notas</div>` : ''}
+            <div class="card__time">
+              🕐 ${formatTime(task.due_date)}
+              <span class="card__source">${sourceLabel}</span>
+            </div>
+          `;
+
+          cardsContainer.appendChild(card);
+        });
+      });
+
+      // Stats
+      document.getElementById('stat-total').textContent = data.total;
+      document.getElementById('stat-urgent').textContent = totalUrgent;
+      document.getElementById('stat-normal').textContent = totalNormal;
+    }
+
+    // ── Modal ────────────────────────────────────────────────────────────
+    function openModal(task) {
+      currentTask = task;
+      const overlay = document.getElementById('modal-overlay');
+
+      // Badge
+      const badge = document.getElementById('modal-badge');
+      badge.className = `modal__badge ${task.is_urgent ? 'card__badge--urgent' : 'card__badge--normal'}`;
+      badge.textContent = task.is_urgent ? '🔴 Urgente' : '📌 Normal';
+
+      // Title & course
+      document.getElementById('modal-title').textContent = task.title;
+      const courseColor = getCourseColor(task.course);
+      document.getElementById('modal-course').innerHTML = `<span class="card__course-dot ${courseColor}"></span> ${task.course}`;
+
+      // Date
+      document.getElementById('modal-date-text').textContent = formatFullDate(task.due_date);
+
+      // Source
+      document.getElementById('modal-source-text').textContent =
+        task.source === 'classroom' ? 'Google Classroom' : 'Ingreso manual';
+
+      // Description
+      const descSection = document.getElementById('modal-desc-section');
+      const descEl = document.getElementById('modal-desc');
+      if (task.description && task.description.trim()) {
+        descSection.style.display = 'block';
+        descEl.textContent = task.description;
+      } else {
+        descSection.style.display = 'none';
+      }
+
+      // Link
+      const linkSection = document.getElementById('modal-link-section');
+      const linkEl = document.getElementById('modal-link');
+      if (task.link) {
+        linkSection.style.display = 'block';
+        linkEl.href = task.link;
+      } else {
+        linkSection.style.display = 'none';
+      }
+
+      // Notes
+      document.getElementById('modal-notes').value = task.notes || '';
+
+      // Hide toast
+      document.getElementById('modal-toast').className = 'modal__toast';
+
+      // Show
+      overlay.classList.add('modal-overlay--visible');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal(e) {
+      if (e && e.target !== document.getElementById('modal-overlay')) return;
+      document.getElementById('modal-overlay').classList.remove('modal-overlay--visible');
+      document.body.style.overflow = '';
+      currentTask = null;
+    }
+
+    async function saveNotes() {
+      if (!currentTask) return;
+
+      const btn = document.getElementById('btn-save');
+      btn.classList.add('modal__btn--loading');
+
+      const notes = document.getElementById('modal-notes').value;
+
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(currentTask.id)}/notes`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notes }),
+        });
+        const data = await res.json();
+
+        // Update local task object
+        currentTask.notes = notes;
+
+        // Show modal toast
+        const mToast = document.getElementById('modal-toast');
+        mToast.textContent = data.calendar_synced
+          ? '✅ Guardado y sincronizado con Google Calendar'
+          : '✅ Guardado localmente';
+        mToast.className = 'modal__toast modal__toast--visible';
+
+        setTimeout(() => {
+          mToast.className = 'modal__toast';
+        }, 3000);
+
+        // Reload board in background to reflect notes indicator
+        loadTasks();
+
+      } catch (e) {
+        console.error(e);
+        const mToast = document.getElementById('modal-toast');
+        mToast.textContent = '❌ Error al guardar';
+        mToast.className = 'modal__toast modal__toast--visible modal__toast--error';
+      } finally {
+        btn.classList.remove('modal__btn--loading');
+      }
+    }
+
+    // Keyboard: Escape to close
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    // ── Fetch Tasks ──────────────────────────────────────────────────────
+    async function loadTasks() {
+      try {
+        const res = await fetch('/api/tasks');
+        const data = await res.json();
+        renderBoard(data);
+      } catch (e) {
+        console.error('Error cargando tareas:', e);
+      }
+    }
+
+    // ── Verify & Sync ────────────────────────────────────────────────────
+    async function verifySync() {
+      const btn = document.getElementById('btn-verify');
+      btn.classList.add('btn-verify--loading');
+      btn.querySelector('.btn-verify__text').textContent = 'Verificando…';
+
+      try {
+        const res = await fetch('/api/verify', { method: 'POST' });
+        const data = await res.json();
+
+        await loadTasks();
+
+        const hasNew = data.new_synced > 0;
+        const hasCompleted = data.completed_count > 0;
+        
+        let title = 'ℹ️ Todo al día';
+        if (hasNew && hasCompleted) title = '✅ Sincronización y Limpieza';
+        else if (hasNew) title = '✅ Sincronización completada';
+        else if (hasCompleted) title = '🧹 Limpieza completada';
+        
+        let body = '';
+        if (hasNew || !hasCompleted) {
+            body += `Se verificaron <span>${data.classroom_total}</span> tareas en Classroom.<br>`;
+            if (hasNew) {
+                body += `<span>${data.new_synced}</span> nuevas sincronizadas al calendario.<br>`;
+            }
+            body += `<span>${data.already_synced}</span> ya estaban sincronizadas.<br>`;
+        }
+        if (hasCompleted) {
+            body += `🧹 <span>${data.completed_count}</span> tareas completadas fueron eliminadas.`;
+        }
+
+        showToast(
+          (hasNew || hasCompleted) ? 'success' : 'info',
+          title,
+          body
+        );
+      } catch (e) {
+        showToast('info', '❌ Error', 'No se pudo conectar con el servidor.');
+        console.error(e);
+      } finally {
+        btn.classList.remove('btn-verify--loading');
+        btn.querySelector('.btn-verify__text').textContent = 'Verificar y Sincronizar';
+      }
+    }
+
+    // ── Toast ─────────────────────────────────────────────────────────────
+    let toastTimeout;
+    function showToast(type, header, body) {
+      const toast = document.getElementById('toast');
+      toast.className = `toast toast--${type} toast--visible`;
+      document.getElementById('toast-header').innerHTML = header;
+      document.getElementById('toast-body').innerHTML = body;
+
+      clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => {
+        toast.classList.remove('toast--visible');
+      }, 6000);
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────
+    loadTasks();
+  </script>
+
+</body>
+</html>
