@@ -22,8 +22,11 @@ def get_calendar_service():
     return _calendar_service
 
 
-def _build_reminders(is_urgent: bool) -> list:
-    """Devuelve la lista de recordatorios dependiendo del nivel de urgencia."""
+def _build_reminders(is_urgent: bool, custom_reminder_minutes: int = None) -> list:
+    """Devuelve la lista de recordatorios dependiendo del nivel de urgencia o personalización."""
+    if custom_reminder_minutes is not None:
+        return [{'method': 'popup', 'minutes': custom_reminder_minutes}]
+        
     if is_urgent:
         # Múltiples tareas en el mismo día → 5 alertas
         return [
@@ -42,7 +45,7 @@ def _build_reminders(is_urgent: bool) -> list:
         ]
 
 
-def _build_event_body(task: dict, is_urgent: bool) -> dict:
+def _build_event_body(task: dict, is_urgent: bool, reminder_minutes: int = None) -> dict:
     """Construye el cuerpo del evento para la API de Google Calendar."""
     course = task.get('course_name', 'Sin materia')
     title  = task.get('title', 'Tarea sin nombre')
@@ -99,20 +102,20 @@ def _build_event_body(task: dict, is_urgent: bool) -> dict:
         },
         'reminders': {
             'useDefault': False,
-            'overrides': _build_reminders(is_urgent),
+            'overrides': _build_reminders(is_urgent, custom_reminder_minutes=reminder_minutes),
         },
         # Colorize events: 11=Tomato(red) para urgente, 7=Peacock(blue) para normal
         'colorId': '11' if is_urgent else '7',
     }
 
 
-def add_task_to_calendar(task: dict, is_urgent: bool = False) -> str | None:
+def add_task_to_calendar(task: dict, is_urgent: bool = False, reminder_minutes: int = None) -> str | None:
     """
     Crea un evento en Google Calendar para la tarea dada.
     Retorna el event_id si se creó correctamente, None si hubo error.
     """
     service = get_calendar_service()
-    event_body = _build_event_body(task, is_urgent)
+    event_body = _build_event_body(task, is_urgent, reminder_minutes=reminder_minutes)
 
     if event_body is None:
         print(f"  ⏭️  Omitida (sin fecha): {task.get('title', '?')}")

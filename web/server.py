@@ -103,6 +103,132 @@ def update_notes(source_id):
     })
 
 
+@app.route('/api/manual_task', methods=['POST'])
+def add_manual_task():
+    """Añade una tarea/nota manual a la base de datos y a Google Calendar."""
+    data = request.get_json()
+    title = data.get('title', '').strip()
+    time_str = data.get('time', '23:59')
+    date_str = data.get('date', '')
+    notes = data.get('notes', '').strip()
+    course_type = data.get('type', 'Tarea Manual').strip()
+    reminder_minutes = data.get('reminder_minutes')
+
+    if not title or not date_str:
+        return jsonify({'error': 'Título y fecha son requeridos'}), 400
+
+    due_date = f"{date_str}T{time_str}:00"
+    
+    import time
+    source_id = f"manual_{int(time.time())}"
+    
+    from dateutil import parser as date_parser
+    import zoneinfo
+    
+    due_dt = date_parser.isoparse(due_date).replace(tzinfo=zoneinfo.ZoneInfo("America/Mexico_City"))
+    now = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City"))
+    diff_days = (due_dt.date() - now.date()).days
+    is_urgent = diff_days <= 1
+
+    task = {
+        'source_id': source_id,
+        'title': title,
+        'course_name': course_type,
+        'due_date': due_date,
+        'source': 'manual',
+        'is_urgent': is_urgent,
+        'description': notes,
+        'link': '',
+        'notes': notes
+    }
+    
+    # Sincronizar con Google Calendar
+    event_id = calendar_sync.add_task_to_calendar(task, is_urgent=is_urgent, reminder_minutes=reminder_minutes)
+    if event_id:
+        task['calendar_event_id'] = event_id
+        
+    # Guardar en BD local
+    db.init_db()
+    db.mark_task_as_synced(
+        source_id=task['source_id'],
+        title=task['title'],
+        course_name=task['course_name'],
+        due_date=task['due_date'],
+        source=task['source'],
+        calendar_event_id=task.get('calendar_event_id', ''),
+        is_urgent=task['is_urgent'],
+        link=task['link'],
+        description=task['description']
+    )
+    
+    return jsonify({'success': True})
+
+
+@app.route('/api/tasks/completed')
+def get_completed_tasks():
+    """Devuelve las tareas completadas, ordenadas por fecha."""
+    db.init_db()
+    records = db.get_all_synced(status='completed')
+    
+    result = []
+    for rec in records:
+        result.append({
+            'id':          rec.get('source_id', ''),
+            'title':       rec.get('title', ''),
+            'course':      rec.get('course_name', ''),
+            'due_date':    rec.get('due_date', ''),
+            'source':      rec.get('source', ''),
+            'is_urgent':   bool(rec.get('is_urgent', 0)),
+            'link':        rec.get('link', ''),
+            'notes':       rec.get('notes', ''),
+            'description': rec.get('description', ''),
+            'status':      rec.get('status', 'completed')
+        })
+    
+    # Ordenar por fecha descendente
+    result.sort(key=lambda t: t['due_date'] if t['due_date'] else '0000-00-00', reverse=True)
+    return jsonify({'tasks': result})
+
+
+@app.route('/api/tasks/<path:source_id>/status', methods=['PUT'])
+def update_task_status_api(source_id):
+    """Marca o desmarca una tarea como completada."""
+    data = request.get_json()
+    new_status = data.get('status')
+    
+    if new_status not in ['pending', 'completed']:
+        return jsonify({'error': 'Invalid status'}), 400
+
+    task = db.get_task_by_source_id(source_id)
+    if not task:
+        return jsonify({'error': 'Tarea no encontrada'}), 404
+        
+    # Prevent unmarking classroom tasks to avoid loop conflicts
+    if new_status == 'pending' and task.get('source') == 'classroom':
+        return jsonify({'error': 'Las tareas de Classroom no se pueden desmarcar manualmente.'}), 400
+
+    db.update_task_status(source_id, new_status)
+
+    # Calendar logic
+    event_id = task.get('calendar_event_id')
+    
+    if new_status == 'completed':
+        if event_id:
+            calendar_sync.delete_calendar_event(event_id)
+            db.update_calendar_event_id(source_id, '')
+    else:
+        # Re-create event in calendar
+        new_event_id = calendar_sync.add_task_to_calendar(task, is_urgent=bool(task.get('is_urgent')))
+        if new_event_id:
+            db.update_calendar_event_id(source_id, new_event_id)
+
+    return jsonify({
+        'success': True,
+        'status': new_status,
+        'source_id': source_id,
+    })
+
+
 @app.route('/api/verify', methods=['POST'])
 def verify_and_sync():
     """
@@ -130,7 +256,7 @@ def verify_and_sync():
     for rec in completed_tasks:
         if rec.get('calendar_event_id'):
             calendar_sync.delete_calendar_event(rec['calendar_event_id'])
-        db.delete_task(rec['source_id'])
+        db.update_task_status(rec['source_id'], 'completed')
         completed_count += 1
 
     # 2. Clasificar

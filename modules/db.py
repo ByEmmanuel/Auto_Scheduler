@@ -26,9 +26,17 @@ def init_db():
             link              TEXT    DEFAULT '',
             notes             TEXT    DEFAULT '',
             description       TEXT    DEFAULT '',
-            synced_at         TEXT    DEFAULT (datetime('now'))
+            synced_at         TEXT    DEFAULT (datetime('now')),
+            status            TEXT    DEFAULT 'pending'
         );
     ''')
+    
+    # Migración de DB existente para agregar columna status
+    try:
+        cursor.execute("ALTER TABLE synced_tasks ADD COLUMN status TEXT DEFAULT 'pending'")
+    except sqlite3.OperationalError:
+        pass # La columna ya existe
+
     conn.commit()
     conn.close()
 
@@ -65,6 +73,24 @@ def update_task_notes(source_id: str, notes: str):
     conn.close()
 
 
+def update_task_status(source_id: str, status: str):
+    conn = get_connection()
+    conn.execute(
+        'UPDATE synced_tasks SET status = ? WHERE source_id = ?', (status, source_id)
+    )
+    conn.commit()
+    conn.close()
+
+def update_calendar_event_id(source_id: str, calendar_event_id: str):
+    conn = get_connection()
+    conn.execute(
+        'UPDATE synced_tasks SET calendar_event_id = ? WHERE source_id = ?', 
+        (calendar_event_id, source_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_task_by_source_id(source_id: str):
     conn = get_connection()
     row = conn.execute(
@@ -74,14 +100,20 @@ def get_task_by_source_id(source_id: str):
     return dict(row) if row else None
 
 
-def get_all_synced(source_id_prefix: str = None):
+def get_all_synced(source_id_prefix: str = None, status: str = 'pending'):
     conn = get_connection()
+    query = 'SELECT * FROM synced_tasks WHERE 1=1'
+    params = []
+    
+    if status is not None:
+        query += ' AND status = ?'
+        params.append(status)
+        
     if source_id_prefix:
-        rows = conn.execute(
-            'SELECT * FROM synced_tasks WHERE source_id LIKE ?', (f'{source_id_prefix}%',)
-        ).fetchall()
-    else:
-        rows = conn.execute('SELECT * FROM synced_tasks').fetchall()
+        query += ' AND source_id LIKE ?'
+        params.append(f'{source_id_prefix}%')
+        
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

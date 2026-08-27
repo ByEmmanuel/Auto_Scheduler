@@ -33,6 +33,13 @@
       </div>
     </div>
 
+    <button class="btn-verify" style="margin-right: 1rem; background: var(--bg-hover);" onclick="openHistoryModal()">
+      <span>Ver Historial</span>
+    </button>
+    <button class="btn-verify" style="margin-right: 1rem; background: var(--bg-hover);" onclick="openManualModal()">
+      <span>+ Añadir Tarea/Nota</span>
+    </button>
+
     <button class="btn-verify" id="btn-verify" onclick="verifySync()">
       <span class="btn-verify__icon">🔄</span>
       <span class="btn-verify__spinner"></span>
@@ -72,13 +79,16 @@
 
         <div class="modal__section" id="modal-desc-section">
           <div class="modal__section-label">// DESCRIPCION</div>
-          <div class="modal__desc" id="modal-desc"></div>
+          <div class="modal__desc-container">
+            <div class="modal__desc" id="modal-desc"></div>
+            <button class="modal__desc-expand" id="modal-desc-expand" onclick="toggleDescExpand()" style="display: none;">Ver más</button>
+          </div>
         </div>
 
         <div class="modal__section" id="modal-link-section">
           <div class="modal__section-label">// ENLACE</div>
           <a class="modal__link" id="modal-link" href="#" target="_blank" rel="noopener">
-            [ ABRIR EN CLASSROOM → ]
+            ABRIR EN CLASSROOM →
           </a>
         </div>
 
@@ -90,13 +100,89 @@
 
         <div class="modal__actions">
           <button class="modal__btn modal__btn--save" id="btn-save" onclick="saveNotes()">
-            <span class="modal__btn-text">[ GUARDAR + SYNC ]</span>
+            <span class="modal__btn-text">GUARDAR NOTAS</span>
             <span class="modal__btn-spinner"></span>
           </button>
-          <button class="modal__btn modal__btn--cancel" onclick="closeModal()">[ CERRAR ]</button>
+          <button class="modal__btn" id="btn-complete" style="background: var(--green); color: var(--bg); border: none;" onclick="markTaskCompleted()">
+            <span class="modal__btn-text">COMPLETAR ✔️</span>
+            <span class="modal__btn-spinner"></span>
+          </button>
+          <button class="modal__btn modal__btn--cancel" onclick="closeModal()">CERRAR</button>
         </div>
 
         <div class="modal__toast" id="modal-toast"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Manual Task Modal ────────────────────────────────────────── -->
+  <div class="modal-overlay" id="manual-modal-overlay" onclick="if(event.target === this) closeManualModal()">
+    <div class="modal">
+      <div class="modal__header" style="border-bottom: none; padding-bottom: 0;">
+        <h2 class="modal__title">Añadir Tarea o Nota</h2>
+      </div>
+
+      <div class="modal__body" style="padding-top: 1rem;">
+        
+        <input type="text" id="manual-title" class="minimal-input" placeholder="¿Qué necesitas recordar?" autocomplete="off">
+
+        <div class="modal__chips" id="manual-type-chips">
+          <button class="modal__chip modal__chip--active" type="button" data-value="Tarea Manual">Tarea</button>
+          <button class="modal__chip" type="button" data-value="Nota General">Nota</button>
+          <button class="modal__chip" type="button" data-value="Recordatorio">Recordatorio</button>
+          <button class="modal__chip" type="button" data-value="Lectura">Lectura</button>
+          <button class="modal__chip" type="button" data-value="Otro">Otro</button>
+        </div>
+        <input type="hidden" id="manual-type" value="Tarea Manual">
+
+        <div class="minimal-row">
+          <div class="minimal-field">
+            <span class="minimal-icon">📅</span>
+            <input type="date" id="manual-date-input" class="minimal-date">
+          </div>
+          <div class="minimal-field">
+            <span class="minimal-icon">🕒</span>
+            <input type="time" id="manual-time" class="minimal-date">
+          </div>
+        </div>
+
+        <div style="font-size: 0.8rem; color: var(--text-dim); margin: 1rem 0 0.5rem 0;">// RECORDATORIO EN IPHONE</div>
+        <div class="modal__chips" id="manual-reminder-chips">
+          <button class="modal__chip modal__chip--active" type="button" data-value="none">Sin alerta</button>
+          <button class="modal__chip" type="button" data-value="10">10 min</button>
+          <button class="modal__chip" type="button" data-value="30">30 min</button>
+          <button class="modal__chip" type="button" data-value="60">1 hora</button>
+          <button class="modal__chip" type="button" data-value="1440">1 día</button>
+        </div>
+        <input type="hidden" id="manual-reminder" value="none">
+
+        <textarea id="manual-notes" class="minimal-textarea" placeholder="Detalles adicionales (opcional)..." rows="2" style="margin-top: 1rem;"></textarea>
+
+        <div class="modal__actions" style="margin-top: 0.5rem;">
+          <button class="modal__btn modal__btn--save" id="btn-save-manual" onclick="saveManualTask()">
+            <span class="modal__btn-text">GUARDAR EN CALENDAR</span>
+            <span class="modal__btn-spinner"></span>
+          </button>
+          <button class="modal__btn modal__btn--cancel" onclick="closeManualModal()">CANCELAR</button>
+        </div>
+
+        <div class="modal__toast" id="manual-modal-toast"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── History Modal ────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="history-modal-overlay" onclick="if(event.target === this) closeHistoryModal()">
+    <div class="modal" style="max-width: 600px;">
+      <div class="modal__header" style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <h2 class="modal__title">Historial de Tareas</h2>
+          <div class="modal__course">Actividades y notas completadas</div>
+        </div>
+        <button class="modal__close" onclick="closeHistoryModal()" style="position: static;">&times;</button>
+      </div>
+      <div class="modal__body" id="history-list" style="padding-top: 1rem; gap: 1rem;">
+         <!-- Populated via JS -->
       </div>
     </div>
   </div>
@@ -110,6 +196,30 @@
   <script>
     // ── State ────────────────────────────────────────────────────────────
     let currentTask = null;
+
+    document.addEventListener('DOMContentLoaded', () => {
+      // Type chips
+      const typeChips = document.querySelectorAll('#manual-type-chips .modal__chip');
+      const typeHiddenInput = document.getElementById('manual-type');
+      typeChips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          typeChips.forEach(c => c.classList.remove('modal__chip--active'));
+          e.currentTarget.classList.add('modal__chip--active');
+          typeHiddenInput.value = e.currentTarget.dataset.value;
+        });
+      });
+      
+      // Reminder chips
+      const reminderChips = document.querySelectorAll('#manual-reminder-chips .modal__chip');
+      const reminderHiddenInput = document.getElementById('manual-reminder');
+      reminderChips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          reminderChips.forEach(c => c.classList.remove('modal__chip--active'));
+          e.currentTarget.classList.add('modal__chip--active');
+          reminderHiddenInput.value = e.currentTarget.dataset.value;
+        });
+      });
+    });
 
     // ── Helpers ──────────────────────────────────────────────────────────
     const COURSE_COLORS = {};
@@ -231,6 +341,13 @@
 
           cardsContainer.appendChild(card);
         });
+
+        // Botón de añadir nota manual
+        const btnAdd = document.createElement('button');
+        btnAdd.className = 'column__add-btn';
+        btnAdd.innerHTML = '<span>+</span> Añadir recordatorio';
+        btnAdd.onclick = () => openManualModal(col.date);
+        cardsContainer.appendChild(btnAdd);
       });
 
       // Stats
@@ -264,9 +381,35 @@
       // Description
       const descSection = document.getElementById('modal-desc-section');
       const descEl = document.getElementById('modal-desc');
+      const expandBtn = document.getElementById('modal-desc-expand');
       if (task.description && task.description.trim()) {
         descSection.style.display = 'block';
-        descEl.textContent = task.description;
+        
+        // Escapar HTML para seguridad
+        let parsed = task.description
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+          
+        // Parsear URLs a enlaces
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        parsed = parsed.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener" style="color: #3B82F6; text-decoration: underline; word-break: break-all;">$1</a>');
+        
+        // Convertir \n a <br>
+        parsed = parsed.replace(/\n/g, '<br>');
+        
+        descEl.innerHTML = parsed;
+        descEl.classList.add('modal__desc--collapsed');
+        expandBtn.style.display = 'none';
+        expandBtn.textContent = 'Ver más';
+        
+        requestAnimationFrame(() => {
+          if (descEl.scrollHeight > descEl.clientHeight) {
+            expandBtn.style.display = 'block';
+          } else {
+            descEl.classList.remove('modal__desc--collapsed');
+          }
+        });
       } else {
         descSection.style.display = 'none';
       }
@@ -297,6 +440,18 @@
       document.getElementById('modal-overlay').classList.remove('modal-overlay--visible');
       document.body.style.overflow = '';
       currentTask = null;
+    }
+
+    function toggleDescExpand() {
+      const descEl = document.getElementById('modal-desc');
+      const btn = document.getElementById('modal-desc-expand');
+      if (descEl.classList.contains('modal__desc--collapsed')) {
+        descEl.classList.remove('modal__desc--collapsed');
+        btn.textContent = 'Ver menos';
+      } else {
+        descEl.classList.add('modal__desc--collapsed');
+        btn.textContent = 'Ver más';
+      }
     }
 
     async function saveNotes() {
@@ -342,10 +497,216 @@
       }
     }
 
+    // ── Manual Task Modal Logic ──────────────────────────────────────────
+    function openManualModal(dateStr) {
+      const isEvent = dateStr && typeof dateStr === 'object';
+      const actualDateStr = isEvent ? null : dateStr;
+      const date = (actualDateStr && actualDateStr !== 'Sin fecha') ? actualDateStr : new Date().toISOString().split('T')[0];
+      
+      document.getElementById('manual-date-input').value = date;
+      document.getElementById('manual-type').value = 'Tarea Manual';
+      
+      // Reset chips visually
+      const typeChips = document.querySelectorAll('#manual-type-chips .modal__chip');
+      typeChips.forEach(c => c.classList.remove('modal__chip--active'));
+      if(typeChips.length > 0) typeChips[0].classList.add('modal__chip--active');
+      
+      const reminderChips = document.querySelectorAll('#manual-reminder-chips .modal__chip');
+      reminderChips.forEach(c => c.classList.remove('modal__chip--active'));
+      if(reminderChips.length > 0) reminderChips[0].classList.add('modal__chip--active');
+      document.getElementById('manual-reminder').value = 'none';
+      
+      document.getElementById('manual-title').value = '';
+      document.getElementById('manual-time').value = '23:59';
+      document.getElementById('manual-notes').value = '';
+
+      document.getElementById('manual-modal-overlay').classList.add('modal-overlay--visible');
+      document.body.style.overflow = 'hidden';
+      
+      setTimeout(() => document.getElementById('manual-title').focus(), 100);
+    }
+
+    function closeManualModal() {
+      document.getElementById('manual-modal-overlay').classList.remove('modal-overlay--visible');
+      document.body.style.overflow = '';
+    }
+
+    async function saveManualTask() {
+      const btn = document.getElementById('btn-save-manual');
+      const title = document.getElementById('manual-title').value.trim();
+      const time = document.getElementById('manual-time').value;
+      const date = document.getElementById('manual-date-input').value;
+      const type = document.getElementById('manual-type').value;
+      const notes = document.getElementById('manual-notes').value;
+      const rawReminder = document.getElementById('manual-reminder').value;
+      const reminder_minutes = rawReminder !== 'none' ? parseInt(rawReminder) : null;
+
+      if (!title) {
+        document.getElementById('manual-title').focus();
+        return;
+      }
+
+      btn.classList.add('modal__btn--loading');
+
+      try {
+        const res = await fetch('/api/manual_task', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, time, date, type, notes, reminder_minutes }),
+        });
+        
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP error ${res.status}`);
+        }
+
+        const mToast = document.getElementById('manual-modal-toast');
+        mToast.textContent = '✅ Guardado y sincronizado';
+        mToast.className = 'modal__toast modal__toast--visible';
+        mToast.style.background = 'var(--accent)';
+
+        setTimeout(() => {
+          mToast.className = 'modal__toast';
+          closeManualModal();
+        }, 1500);
+
+        loadTasks();
+
+      } catch (e) {
+        console.error(e);
+        const mToast = document.getElementById('manual-modal-toast');
+        mToast.textContent = '❌ Error: ' + e.message;
+        mToast.className = 'modal__toast modal__toast--visible';
+        mToast.style.background = 'var(--red)';
+        setTimeout(() => mToast.className = 'modal__toast', 4000);
+      } finally {
+        btn.classList.remove('modal__btn--loading');
+      }
+    }
+
     // Keyboard: Escape to close
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeModal();
+      if (e.key === 'Escape') {
+        closeModal();
+        closeManualModal();
+        closeHistoryModal();
+      }
     });
+
+    // ── History Logic ────────────────────────────────────────────────────
+    async function loadCompletedTasks() {
+      const listEl = document.getElementById('history-list');
+      listEl.innerHTML = '<div style="text-align:center; color:var(--text-muted);">Cargando historial...</div>';
+      
+      try {
+        const res = await fetch('/api/tasks/completed');
+        const data = await res.json();
+        const tasks = data.tasks;
+        
+        if (tasks.length === 0) {
+          listEl.innerHTML = '<div style="text-align:center; color:var(--text-muted);">No hay tareas completadas.</div>';
+          return;
+        }
+        
+        listEl.innerHTML = '';
+        tasks.forEach(task => {
+          const item = document.createElement('div');
+          item.className = 'history-item';
+          
+          const sourceLabel = task.source === 'classroom' ? 'Classroom' : 'Manual';
+          const canUnmark = task.source !== 'classroom';
+          
+          // Truncate descriptions roughly or let CSS handle it
+          let descHtml = '';
+          if (task.description) {
+            let parsed = task.description.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            descHtml = `<div class="history-item__desc">${parsed}</div>`;
+          }
+          
+          item.innerHTML = `
+            <div class="history-item__header" onclick="this.parentElement.classList.toggle('history-item--expanded')">
+               <div class="history-item__title">
+                 <span class="history-item__dot ${getCourseColor(task.course)}"></span>
+                 ${task.title}
+               </div>
+               <div class="history-item__meta">
+                 ${formatTime(task.due_date)} • ${sourceLabel}
+               </div>
+            </div>
+            <div class="history-item__body">
+               ${descHtml}
+               ${canUnmark 
+                 ? `<button class="modal__btn" style="padding: 0.4rem; font-size: 0.8rem; background: var(--bg-hover); color: var(--text);" onclick="unmarkTaskCompleted('${task.id}')">🔄 Desmarcar (Regresar a pendientes)</button>`
+                 : `<div style="font-size: 0.8rem; color: var(--text-muted);"><i>Entregado en Google Classroom (no se puede desmarcar aquí)</i></div>`
+               }
+            </div>
+          `;
+          listEl.appendChild(item);
+        });
+        
+      } catch (e) {
+        console.error(e);
+        listEl.innerHTML = '<div style="text-align:center; color:var(--red-text);">Error al cargar el historial</div>';
+      }
+    }
+
+    function openHistoryModal() {
+      document.getElementById('history-modal-overlay').classList.add('modal-overlay--visible');
+      document.body.style.overflow = 'hidden';
+      loadCompletedTasks();
+    }
+
+    function closeHistoryModal() {
+      document.getElementById('history-modal-overlay').classList.remove('modal-overlay--visible');
+      document.body.style.overflow = '';
+    }
+
+    async function markTaskCompleted() {
+      if (!currentTask) return;
+      
+      const btn = document.getElementById('btn-complete');
+      btn.classList.add('modal__btn--loading');
+      
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(currentTask.id)}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'completed' })
+        });
+        
+        if (res.ok) {
+          showToast('success', '✅ Tarea completada', 'Se ha movido al historial y eliminado del calendario.');
+          closeModal();
+          loadTasks();
+        } else {
+          throw new Error("Failed");
+        }
+      } catch (e) {
+        showToast('info', '❌ Error', 'No se pudo completar la tarea.');
+      } finally {
+        btn.classList.remove('modal__btn--loading');
+      }
+    }
+
+    async function unmarkTaskCompleted(id) {
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'pending' })
+        });
+        
+        if (res.ok) {
+          showToast('success', '✅ Restaurada', 'La tarea ha vuelto a pendientes y al calendario.');
+          loadCompletedTasks();
+          loadTasks();
+        } else {
+          throw new Error("Failed");
+        }
+      } catch (e) {
+        showToast('info', '❌ Error', 'No se pudo desmarcar la tarea.');
+      }
+    }
 
     // ── Fetch Tasks ──────────────────────────────────────────────────────
     async function loadTasks() {
