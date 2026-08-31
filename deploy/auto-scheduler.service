@@ -1,0 +1,16 @@
+[Unit]
+Description=Auto Scheduler - Dashboard web (Google Classroom + Calendar)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=byemmanuel
+WorkingDirectory=/home/byemmanuel/Desktop/Workspace/IA/Auto_Scheduler
+ExecStart=/home/byemmanuel/Desktop/Workspace/IA/Auto_Scheduler/venv/bin/python /home/byemmanuel/Desktop/Workspace/IA/Auto_Scheduler/web/server.py
+Environment=FLASK_DEBUG=0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

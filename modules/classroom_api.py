@@ -76,18 +76,23 @@ def fetch_pending_tasks():
                     userId='me'
                 ).execute()
                 submissions = submissions_result.get('studentSubmissions', [])
-                
+
                 # Si no hay entregas, o si el estado no es entregado/calificado, está pendiente
                 is_submitted = False
+                submission_id = ''
+                submission_state = ''
+                if submissions:
+                    submission_id = submissions[0].get('id', '')
+                    submission_state = submissions[0].get('state', '')
                 for sub in submissions:
                     state = sub.get('state')
                     if state in ['TURNED_IN', 'RETURNED']:
                         is_submitted = True
                         break
-                
+
                 if not is_submitted:
                     due_date = parse_due_date(cw.get('dueDate'), cw.get('dueTime'))
-                    
+
                     pending_tasks.append({
                         'source_id': f"classroom_{cw_id}",
                         'title': title,
@@ -96,6 +101,10 @@ def fetch_pending_tasks():
                         'description': description,
                         'source': 'classroom',
                         'link': cw.get('alternateLink', ''),
+                        'course_id': course_id,
+                        'coursework_id': cw_id,
+                        'submission_id': submission_id,
+                        'submission_state': submission_state,
                     })
                     
             except Exception as e:

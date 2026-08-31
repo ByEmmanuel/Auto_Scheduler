@@ -27,15 +27,30 @@ def init_db():
             notes             TEXT    DEFAULT '',
             description       TEXT    DEFAULT '',
             synced_at         TEXT    DEFAULT (datetime('now')),
-            status            TEXT    DEFAULT 'pending'
+            status            TEXT    DEFAULT 'pending',
+            course_id         TEXT    DEFAULT '',
+            coursework_id     TEXT    DEFAULT '',
+            submission_id     TEXT    DEFAULT '',
+            submission_state  TEXT    DEFAULT '',
+            attachments       TEXT    DEFAULT '[]',
+            recurrence_group  TEXT    DEFAULT ''
         );
     ''')
-    
-    # Migración de DB existente para agregar columna status
-    try:
-        cursor.execute("ALTER TABLE synced_tasks ADD COLUMN status TEXT DEFAULT 'pending'")
-    except sqlite3.OperationalError:
-        pass # La columna ya existe
+
+    # Migraciones de DB existente (agregar columnas si faltan)
+    existing_cols = {row['name'] for row in cursor.execute('PRAGMA table_info(synced_tasks)').fetchall()}
+    migrations = {
+        'status':           "ALTER TABLE synced_tasks ADD COLUMN status TEXT DEFAULT 'pending'",
+        'course_id':        "ALTER TABLE synced_tasks ADD COLUMN course_id TEXT DEFAULT ''",
+        'coursework_id':    "ALTER TABLE synced_tasks ADD COLUMN coursework_id TEXT DEFAULT ''",
+        'submission_id':    "ALTER TABLE synced_tasks ADD COLUMN submission_id TEXT DEFAULT ''",
+        'submission_state': "ALTER TABLE synced_tasks ADD COLUMN submission_state TEXT DEFAULT ''",
+        'attachments':      "ALTER TABLE synced_tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
+        'recurrence_group': "ALTER TABLE synced_tasks ADD COLUMN recurrence_group TEXT DEFAULT ''",
+    }
+    for col, stmt in migrations.items():
+        if col not in existing_cols:
+            cursor.execute(stmt)
 
     conn.commit()
     conn.close()
@@ -51,15 +66,19 @@ def is_task_synced(source_id: str) -> bool:
 
 
 def mark_task_as_synced(source_id, title, course_name, due_date, source,
-                        calendar_event_id, is_urgent=False, link='', description=''):
+                        calendar_event_id, is_urgent=False, link='', description='',
+                        course_id='', coursework_id='', submission_id='',
+                        submission_state='', recurrence_group=''):
     conn = get_connection()
     conn.execute('''
         INSERT OR REPLACE INTO synced_tasks
             (source_id, title, course_name, due_date, source, is_urgent,
-             calendar_event_id, link, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             calendar_event_id, link, description, course_id, coursework_id,
+             submission_id, submission_state, recurrence_group)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (source_id, title, course_name, due_date, source, int(is_urgent),
-          calendar_event_id, link, description))
+          calendar_event_id, link, description, course_id, coursework_id,
+          submission_id, submission_state, recurrence_group))
     conn.commit()
     conn.close()
 

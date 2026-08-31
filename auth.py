@@ -7,11 +7,12 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-# Permisos necesarios: leer cursos, leer tareas, leer entregas (para saber si ya se hizo) y acceso al calendario.
+# Permisos necesarios: leer cursos, leer/entregar tareas propias, subir archivos
+# a Drive para adjuntarlos a una entrega, y acceso al calendario.
 SCOPES = [
     'https://www.googleapis.com/auth/classroom.courses.readonly',
-    'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
-    'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly',
+    'https://www.googleapis.com/auth/classroom.coursework.me',
+    'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/calendar'
 ]
 

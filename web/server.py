@@ -10,6 +10,8 @@ Endpoints:
 
 import os
 import sys
+import json
+import time
 import datetime
 from collections import defaultdict
 
@@ -21,6 +23,23 @@ from modules import db, classroom_api, calendar_sync
 app = Flask(__name__, static_folder='static')
 
 NOW_UTC = datetime.datetime.now(datetime.timezone.utc)
+
+
+def _serialize_task(rec: dict) -> dict:
+    """Normaliza un registro de la BD al formato que consume el frontend."""
+    return {
+        'id':                rec.get('source_id', ''),
+        'title':             rec.get('title', ''),
+        'course':            rec.get('course_name', ''),
+        'due_date':          rec.get('due_date', ''),
+        'source':            rec.get('source', ''),
+        'is_urgent':         bool(rec.get('is_urgent', 0)),
+        'link':              rec.get('link', ''),
+        'notes':             rec.get('notes', ''),
+        'description':       rec.get('description', ''),
+        'status':            rec.get('status', 'pending'),
+        'recurrence_group':  rec.get('recurrence_group', ''),
+    }
 
 
 # ── Páginas ────────────────────────────────────────────────────────────────────
@@ -46,17 +65,7 @@ def get_tasks():
     grouped = defaultdict(list)
     for rec in records:
         day = rec.get('due_date', '')[:10] if rec.get('due_date') else 'Sin fecha'
-        grouped[day].append({
-            'id':          rec.get('source_id', ''),
-            'title':       rec.get('title', ''),
-            'course':      rec.get('course_name', ''),
-            'due_date':    rec.get('due_date', ''),
-            'source':      rec.get('source', ''),
-            'is_urgent':   bool(rec.get('is_urgent', 0)),
-            'link':        rec.get('link', ''),
-            'notes':       rec.get('notes', ''),
-            'description': rec.get('description', ''),
-        })
+        grouped[day].append(_serialize_task(rec))
 
     # Ordenar por fecha (las sin fecha van al final)
     sorted_days = sorted(
@@ -105,7 +114,7 @@ def update_notes(source_id):
 
 @app.route('/api/manual_task', methods=['POST'])
 def add_manual_task():
-    """Añade una tarea/nota manual a la base de datos y a Google Calendar."""
+    """Añade una tarea/nota manual (opcionalmente repetida) a la BD y a Google Calendar."""
     data = request.get_json()
     title = data.get('title', '').strip()
     time_str = data.get('time', '23:59')
@@ -114,53 +123,79 @@ def add_manual_task():
     course_type = data.get('type', 'Tarea Manual').strip()
     reminder_minutes = data.get('reminder_minutes')
 
+    # Repetición: cada N días, un número de ocurrencias (incluye la primera)
+    repeat_interval_days = data.get('repeat_interval_days')
+    repeat_count = data.get('repeat_count', 1) or 1
+    try:
+        repeat_count = max(1, min(int(repeat_count), 60))
+    except (TypeError, ValueError):
+        repeat_count = 1
+    if not repeat_interval_days:
+        repeat_count = 1
+
     if not title or not date_str:
         return jsonify({'error': 'Título y fecha son requeridos'}), 400
 
-    due_date = f"{date_str}T{time_str}:00"
-    
-    import time
-    source_id = f"manual_{int(time.time())}"
-    
     from dateutil import parser as date_parser
     import zoneinfo
-    
-    due_dt = date_parser.isoparse(due_date).replace(tzinfo=zoneinfo.ZoneInfo("America/Mexico_City"))
-    now = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City"))
-    diff_days = (due_dt.date() - now.date()).days
-    is_urgent = diff_days <= 1
 
-    task = {
-        'source_id': source_id,
-        'title': title,
-        'course_name': course_type,
-        'due_date': due_date,
-        'source': 'manual',
-        'is_urgent': is_urgent,
-        'description': notes,
-        'link': '',
-        'notes': notes
-    }
-    
-    # Sincronizar con Google Calendar
-    event_id = calendar_sync.add_task_to_calendar(task, is_urgent=is_urgent, reminder_minutes=reminder_minutes)
-    if event_id:
-        task['calendar_event_id'] = event_id
-        
-    # Guardar en BD local
+    base_dt = date_parser.isoparse(f"{date_str}T{time_str}:00").replace(tzinfo=zoneinfo.ZoneInfo("America/Mexico_City"))
+    now = datetime.datetime.now(zoneinfo.ZoneInfo("America/Mexico_City"))
+
+    batch_id = int(time.time())
+    recurrence_group = f"manual_{batch_id}" if repeat_count > 1 else ''
+    created = []
+
     db.init_db()
-    db.mark_task_as_synced(
-        source_id=task['source_id'],
-        title=task['title'],
-        course_name=task['course_name'],
-        due_date=task['due_date'],
-        source=task['source'],
-        calendar_event_id=task.get('calendar_event_id', ''),
-        is_urgent=task['is_urgent'],
-        link=task['link'],
-        description=task['description']
-    )
-    
+
+    for i in range(repeat_count):
+        due_dt = base_dt + datetime.timedelta(days=int(repeat_interval_days) * i) if repeat_interval_days else base_dt
+        due_date = due_dt.replace(tzinfo=None).isoformat()
+        source_id = f"manual_{batch_id}_{i}" if repeat_count > 1 else f"manual_{batch_id}"
+        is_urgent = (due_dt.date() - now.date()).days <= 1
+
+        task = {
+            'source_id': source_id,
+            'title': title,
+            'course_name': course_type,
+            'due_date': due_date,
+            'source': 'manual',
+            'is_urgent': is_urgent,
+            'description': notes,
+            'link': '',
+            'notes': notes,
+        }
+
+        event_id = calendar_sync.add_task_to_calendar(task, is_urgent=is_urgent, reminder_minutes=reminder_minutes)
+
+        db.mark_task_as_synced(
+            source_id=task['source_id'],
+            title=task['title'],
+            course_name=task['course_name'],
+            due_date=task['due_date'],
+            source=task['source'],
+            calendar_event_id=event_id or '',
+            is_urgent=task['is_urgent'],
+            link=task['link'],
+            description=task['description'],
+            recurrence_group=recurrence_group,
+        )
+        created.append(source_id)
+
+    return jsonify({'success': True, 'created': created})
+
+
+@app.route('/api/tasks/<path:source_id>', methods=['DELETE'])
+def delete_task_api(source_id):
+    """Elimina una tarea permanentemente (BD local + evento de calendario)."""
+    task = db.get_task_by_source_id(source_id)
+    if not task:
+        return jsonify({'error': 'Tarea no encontrada'}), 404
+
+    if task.get('calendar_event_id'):
+        calendar_sync.delete_calendar_event(task['calendar_event_id'])
+
+    db.delete_task(source_id)
     return jsonify({'success': True})
 
 
@@ -169,22 +204,9 @@ def get_completed_tasks():
     """Devuelve las tareas completadas, ordenadas por fecha."""
     db.init_db()
     records = db.get_all_synced(status='completed')
-    
-    result = []
-    for rec in records:
-        result.append({
-            'id':          rec.get('source_id', ''),
-            'title':       rec.get('title', ''),
-            'course':      rec.get('course_name', ''),
-            'due_date':    rec.get('due_date', ''),
-            'source':      rec.get('source', ''),
-            'is_urgent':   bool(rec.get('is_urgent', 0)),
-            'link':        rec.get('link', ''),
-            'notes':       rec.get('notes', ''),
-            'description': rec.get('description', ''),
-            'status':      rec.get('status', 'completed')
-        })
-    
+
+    result = [_serialize_task(rec) for rec in records]
+
     # Ordenar por fecha descendente
     result.sort(key=lambda t: t['due_date'] if t['due_date'] else '0000-00-00', reverse=True)
     return jsonify({'tasks': result})
@@ -315,6 +337,10 @@ def verify_and_sync():
                 is_urgent=is_urgent,
                 link=task.get('link', ''),
                 description=task.get('description', ''),
+                course_id=task.get('course_id', ''),
+                coursework_id=task.get('coursework_id', ''),
+                submission_id=task.get('submission_id', ''),
+                submission_state=task.get('submission_state', ''),
             )
             synced.append({'title': task['title'], 'course': task.get('course_name', '')})
         else:
@@ -332,4 +358,8 @@ def verify_and_sync():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050, debug=True)
+    # El reloader de debug=True no conviene bajo supervisión de systemd
+    # (bifurca un proceso hijo que el servicio no rastrea). Actívalo con
+    # FLASK_DEBUG=1 solo para desarrollo local.
+    debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+    app.run(host='0.0.0.0', port=5050, debug=debug_mode)

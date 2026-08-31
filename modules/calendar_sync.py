@@ -22,11 +22,20 @@ def get_calendar_service():
     return _calendar_service
 
 
-def _build_reminders(is_urgent: bool, custom_reminder_minutes: int = None) -> list:
-    """Devuelve la lista de recordatorios dependiendo del nivel de urgencia o personalización."""
+def _build_reminders(is_urgent: bool, custom_reminder_minutes=None) -> list:
+    """Devuelve la lista de recordatorios dependiendo del nivel de urgencia o personalización.
+
+    `custom_reminder_minutes` acepta un int (una sola alerta) o una lista de
+    ints (múltiples alertas). Google Calendar permite máximo 5 overrides por evento.
+    """
     if custom_reminder_minutes is not None:
-        return [{'method': 'popup', 'minutes': custom_reminder_minutes}]
-        
+        minutes_list = custom_reminder_minutes if isinstance(custom_reminder_minutes, (list, tuple)) else [custom_reminder_minutes]
+        minutes_list = sorted(set(int(m) for m in minutes_list if m is not None))[:5]
+        if minutes_list:
+            return [{'method': 'popup', 'minutes': m} for m in minutes_list]
+        # Lista vacía explícita → sin alertas
+        return []
+
     if is_urgent:
         # Múltiples tareas en el mismo día → 5 alertas
         return [
