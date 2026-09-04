@@ -25,6 +25,9 @@ token.json
 *.sqlite3
 scheduler.db
 
+# Logs de ejecución
+web_server.log
+
 # OS generated files
 .DS_Store
 .DS_Store?

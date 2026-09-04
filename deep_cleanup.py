@@ -38,7 +38,14 @@ def deep_cleanup():
         for event in events:
             summary = event.get('summary', '')
             event_id = event['id']
-            
+
+            # El parámetro q= de Google es búsqueda de texto libre (también
+            # matchea descripción, ubicación, etc.), no un filtro exacto de
+            # título. Confirmamos aquí que el evento realmente es nuestro
+            # para no borrar eventos ajenos que solo mencionen "ENTREGAR:".
+            if 'ENTREGAR:' not in summary:
+                continue
+
             try:
                 service.events().delete(calendarId='primary', eventId=event_id).execute()
                 deleted += 1

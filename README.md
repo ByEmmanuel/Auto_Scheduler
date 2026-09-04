@@ -72,46 +72,81 @@ La primera vez que ejecutas cualquier script del pipeline (como `main.py`), suce
 
 ## 🔄 4. El Pipeline de Sincronización
 
-El núcleo del proyecto funciona siguiendo este pipeline secuencial de 4 pasos:
+**Módulo:** `modules/sync_pipeline.py` (usado por igual desde `main.py` y desde
+el endpoint `POST /api/verify` del dashboard, para que ambos flujos se
+comporten exactamente igual). El pipeline sigue este orden — **Calendar
+primero, Classroom después** — precisamente para no duplicar tareas que ya
+tienen un evento vivo en el calendario:
 
-### Paso 1: Extracción de Datos (Classroom)
+### Paso 1: Calendar → local (reconciliación)
+*   **Función:** `reconcile_calendar_with_local()` / `calendar_sync.event_exists()`
+*   Antes de tocar Classroom, el sistema recorre la base de datos local
+    (`scheduler.db`, tabla `synced_tasks`) y confirma en Google Calendar que
+    cada evento guardado (`calendar_event_id`) **sigue existiendo**.
+*   Si un evento fue borrado o cancelado a mano en Calendar, se limpia
+    **solo** el `calendar_event_id` de ese registro local (nunca se crea ni
+    se borra nada en este paso), dejándolo marcado para que el Paso 3 lo
+    vuelva a crear sin duplicar el registro.
+
+### Paso 2: Local → Classroom (extracción)
 *   **Módulo:** `classroom_api.py`
-*   El sistema llama al endpoint de cursos para obtener las clases activas.
-*   Luego, itera sobre cada clase y extrae el `courseWork` (las tareas).
-*   Se filtran aquellas tareas cuyo estado sea `TURNED_IN` (Entregadas) o `RETURNED` (Calificadas), quedándonos únicamente con las pendientes.
-*   **Transformación de Zona Horaria:** Google Classroom devuelve la fecha y hora de entrega (`dueDate`, `dueTime`) en **UTC estricto**. El script convierte inmediatamente esta fecha a la zona horaria local (`America/Mexico_City`) para evitar desfases en la lógica posterior.
+*   El sistema llama al endpoint de cursos para obtener las clases activas,
+    itera sobre cada una y extrae el `courseWork` (las tareas).
+*   Se filtran las tareas cuyo estado sea `TURNED_IN` (Entregadas) o
+    `RETURNED` (Calificadas), quedándonos solo con las pendientes.
+*   **Transformación de Zona Horaria:** Classroom devuelve `dueDate`/`dueTime`
+    en **UTC estricto**; el script las convierte de inmediato a
+    `America/Mexico_City`.
 
-### Paso 2: Base de Datos Local (Deduplicación)
-*   **Módulo:** `db.py` (SQLite)
-*   Para no inundar el Google Calendar creando la misma tarea múltiples veces, el sistema utiliza una base de datos local `scheduler.db` con una tabla `synced_tasks`.
-*   Cada tarea de Classroom tiene un ID único. Antes de sincronizar, verificamos si ese ID ya existe en nuestra base de datos.
-*   Si ya existe, se ignora.
+### Paso 3: Diff Classroom vs. local (deduplicación + limpieza)
+*   **Función:** `sync_from_classroom()`
+*   Todo lo que está en Classroom y **ya tiene un evento vivo en local**
+    (sobrevivió al Paso 1) se deja intacto — así nunca se duplica una tarea.
+*   Todo lo que está en Classroom y **no** tiene evento vivo en local (tarea
+    nueva, o sanada en el Paso 1) se inserta en Google Calendar: se calcula
+    la hora de inicio (1 hora antes de vencer), se arma el evento con
+    título/curso/enlace/zona horaria y un color según urgencia (🔵 normal /
+    🔴 varias entregas el mismo día), y el `eventId` resultante se guarda en
+    `synced_tasks`.
+*   Lo que estaba en local pero **ya no aparece pendiente en Classroom**
+    (se entregó/calificó) se borra de Calendar y se marca `completed` en
+    local.
 
-### Paso 3: Limpieza Automática (Auto-Cleanup)
-*   **Módulo:** `main.py`
-*   El pipeline extrae todas las tareas guardadas previamente en la base de datos y las compara con la nueva lista de tareas pendientes descargadas en el Paso 1.
-*   Si una tarea que estaba en la base de datos **ya no aparece en la lista de Classroom** (porque se entregó recientemente), el pipeline invoca la API de Calendar para **borrar el evento del calendario** y elimina el registro de la base de datos local.
+### Paso 4: Refresco y reporte
+*   El pipeline devuelve un resumen (`run_full_sync()`); tanto la terminal
+    (`main.py`) como el dashboard (toast en la web tras `/api/verify`)
+    muestran ese resumen terminando con el mensaje de confirmación
+    **"Sincronización completa: Calendar y Classroom están al día."**
 
-### Paso 4: Inserción (Google Calendar)
-*   **Módulo:** `calendar_sync.py`
-*   Por cada tarea nueva, se calcula una hora de inicio (1 hora antes de la fecha de entrega).
-*   Se empaqueta un objeto JSON con el título del curso, nombre de la tarea, enlace, y zona horaria local.
-*   Se inyecta un color específico para diferenciar tareas normales (Azul) y tareas urgentes/saturadas (Rojo).
-*   Se llama a la API de Calendar para insertar el evento.
-*   El `eventId` generado por Google Calendar se devuelve y se guarda en la base de datos SQLite para permitir futuras manipulaciones (como edición de notas o eliminación en el Paso 3).
+> La lógica completa de este pipeline también vive en
+> `memory/classroom-calendar-sync-pipeline.md` como referencia rápida para
+> depurar problemas de sincronización sin tener que releer todo el código.
 
 ---
 
-## 🚀 5. Ejecución del Pipeline
+## 🚀 5. Ejecución
 
-Una vez configurado `credentials.json`, el flujo completo se dispara ejecutando:
+### Un solo comando (recomendado)
 
 ```bash
-python main.py
+./start.sh
 ```
 
-Al hacerlo, la consola mostrará en tiempo real:
-1. Cuántas tareas pendientes encontró en Classroom.
-2. Cuántas tareas antiguas fueron limpiadas/borradas.
-3. Cuántas tareas nuevas se están insertando en el Calendario.
-4. El resumen de la ejecución.
+Esto: (1) verifica/renueva la sesión de Google — abre el navegador a pedir
+credenciales solo si hace falta iniciar sesión —, (2) corre el pipeline de
+sincronización de 4 pasos completo, y (3) levanta el dashboard web (si no
+está corriendo ya) y lo abre automáticamente en el navegador.
+
+### Manual / paso a paso
+
+```bash
+python main.py          # corre el pipeline por consola
+python web/server.py    # levanta el dashboard en http://localhost:5050
+```
+
+Al correr el pipeline (por `start.sh`, `main.py` o el botón "Verificar y
+Sincronizar" del dashboard) la consola/web mostrará en tiempo real:
+1. Cuántos eventos de Calendar se verificaron y cuántos hubo que sanar.
+2. Cuántas tareas pendientes se encontraron en Classroom.
+3. Cuántas tareas nuevas se sincronizaron y cuántas se limpiaron por entregadas.
+4. El mensaje final de sincronización completa.

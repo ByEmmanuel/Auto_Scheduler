@@ -13,16 +13,22 @@ import sys
 import json
 import time
 import datetime
+import threading
 from collections import defaultdict
 
 from flask import Flask, jsonify, request, send_from_directory
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from modules import db, classroom_api, calendar_sync
+from modules import db, calendar_sync, sync_pipeline
 
 app = Flask(__name__, static_folder='static')
 
 NOW_UTC = datetime.datetime.now(datetime.timezone.utc)
+
+# Evita que dos /api/verify concurrentes (doble clic, dos pestañas) corran el
+# pipeline al mismo tiempo: ambos podrían no ver todavía la tarea que el otro
+# está a punto de insertar y crear el mismo evento duplicado en Calendar.
+_sync_lock = threading.Lock()
 
 
 def _serialize_task(rec: dict) -> dict:
@@ -254,106 +260,33 @@ def update_task_status_api(source_id):
 @app.route('/api/verify', methods=['POST'])
 def verify_and_sync():
     """
-    Ejecuta el flujo completo:
-      1. Lee tareas pendientes de Classroom
-      2. Clasifica (vencidas, sin fecha, ya sincronizadas)
-      3. Sincroniza las nuevas con Google Calendar
-      4. Devuelve el resumen
+    Dispara el pipeline de 4 pasos (modules/sync_pipeline.py), compartido con
+    main.py, y devuelve el resumen para el dashboard:
+      1. Calendar → local (sana eventos borrados a mano)
+      2. Local → Classroom (descarga tareas pendientes)
+      3. Diff Classroom vs. local (crea solo lo nuevo, retira lo entregado)
+      4. Reporte / mensaje de "sincronización completa"
     """
-    db.init_db()
+    if not _sync_lock.acquire(blocking=False):
+        return jsonify({'error': 'Ya hay una sincronización en curso, espera a que termine.'}), 409
 
-    # 1. Extraer
-    all_tasks = classroom_api.fetch_pending_tasks()
-    
-    # 1.5 Limpiar tareas entregadas
-    all_source_ids = {t['source_id'] for t in all_tasks}
-    synced_records = db.get_all_synced()
-    completed_tasks = []
-    
-    for rec in synced_records:
-        if rec.get('source') == 'classroom' and rec.get('source_id') not in all_source_ids:
-            completed_tasks.append(rec)
-            
-    completed_count = 0
-    for rec in completed_tasks:
-        if rec.get('calendar_event_id'):
-            calendar_sync.delete_calendar_event(rec['calendar_event_id'])
-        db.update_task_status(rec['source_id'], 'completed')
-        completed_count += 1
-
-    # 2. Clasificar
-    from dateutil import parser as dp
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    already   = []
-    skipped   = []
-    candidates = []
-
-    for task in all_tasks:
-        if db.is_task_synced(task['source_id']):
-            already.append(task)
-            continue
-
-        due_str = task.get('due_date')
-        if not due_str:
-            skipped.append({'title': task['title'], 'course': task.get('course_name', ''), 'reason': 'Sin fecha'})
-            continue
-
-        due_dt = dp.isoparse(due_str)
-        if due_dt.tzinfo is None:
-            import zoneinfo
-            local_tz = zoneinfo.ZoneInfo("America/Mexico_City")
-            due_dt = due_dt.replace(tzinfo=local_tz)
-
-        if due_dt < now:
-            skipped.append({'title': task['title'], 'course': task.get('course_name', ''), 'reason': 'Ya venció'})
-            continue
-
-        candidates.append((task, due_dt))
-
-    # Contar por día para urgencia
-    tasks_per_day = defaultdict(int)
-    for task, due_dt in candidates:
-        tasks_per_day[due_dt.strftime('%Y-%m-%d')] += 1
-
-    # 3. Sincronizar
-    synced = []
-    errors = []
-
-    for task, due_dt in candidates:
-        day_key = due_dt.strftime('%Y-%m-%d')
-        is_urgent = tasks_per_day[day_key] > 1
-
-        event_id = calendar_sync.add_task_to_calendar(task, is_urgent=is_urgent)
-
-        if event_id:
-            db.mark_task_as_synced(
-                source_id=task['source_id'],
-                title=task['title'],
-                course_name=task.get('course_name', ''),
-                due_date=task.get('due_date'),
-                source=task.get('source', 'classroom'),
-                calendar_event_id=event_id,
-                is_urgent=is_urgent,
-                link=task.get('link', ''),
-                description=task.get('description', ''),
-                course_id=task.get('course_id', ''),
-                coursework_id=task.get('coursework_id', ''),
-                submission_id=task.get('submission_id', ''),
-                submission_state=task.get('submission_state', ''),
-            )
-            synced.append({'title': task['title'], 'course': task.get('course_name', '')})
-        else:
-            errors.append({'title': task['title'], 'course': task.get('course_name', '')})
+    try:
+        summary = sync_pipeline.run_full_sync()
+    finally:
+        _sync_lock.release()
 
     return jsonify({
-        'classroom_total':  len(all_tasks),
-        'already_synced':   len(already),
-        'new_synced':       len(synced),
-        'skipped':          skipped,
-        'errors':           errors,
-        'synced_tasks':     synced,
-        'completed_count':  completed_count,
+        'classroom_total':  summary['classroom_total'],
+        'already_synced':   summary['already_synced'],
+        'new_synced':       len(summary['synced']),
+        'skipped':          [{'title': t['title'], 'course': t.get('course_name', ''),
+                               'reason': 'Sin fecha' if reason == 'sin_fecha' else 'Ya venció'}
+                              for t, reason in summary['skipped']],
+        'errors':           [{'title': t['title'], 'course': t.get('course_name', '')} for t in summary['errors']],
+        'synced_tasks':     [{'title': t['title'], 'course': t.get('course_name', '')} for t in summary['synced']],
+        'completed_count':  len(summary['completed']),
+        'calendar_healed':  len(summary['calendar_healed']),
+        'message':          summary['message'],
     })
 
 

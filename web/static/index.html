@@ -823,6 +823,8 @@
     // ── Verify & Sync ────────────────────────────────────────────────────
     async function verifySync() {
       const btn = document.getElementById('btn-verify');
+      if (btn.disabled) return; // ya hay una sincronización en curso
+      btn.disabled = true;
       btn.classList.add('btn-verify--loading');
       btn.querySelector('.btn-verify__text').textContent = 'Verificando…';
 
@@ -830,17 +832,27 @@
         const res = await fetch('/api/verify', { method: 'POST' });
         const data = await res.json();
 
+        if (res.status === 409) {
+          showToast('info', 'ℹ️ Ya en curso', data.error);
+          return;
+        }
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
         await loadTasks();
 
         const hasNew = data.new_synced > 0;
         const hasCompleted = data.completed_count > 0;
-        
-        let title = 'ℹ️ Todo al día';
+        const hasHealed = data.calendar_healed > 0;
+
+        let title = '✅ Todo sincronizado';
         if (hasNew && hasCompleted) title = '✅ Sincronización y Limpieza';
         else if (hasNew) title = '✅ Sincronización completada';
         else if (hasCompleted) title = '🧹 Limpieza completada';
-        
+
         let body = '';
+        if (hasHealed) {
+            body += `🔧 <span>${data.calendar_healed}</span> evento(s) borrados a mano en Calendar fueron re-creados.<br>`;
+        }
         if (hasNew || !hasCompleted) {
             body += `Se verificaron <span>${data.classroom_total}</span> tareas en Classroom.<br>`;
             if (hasNew) {
@@ -849,18 +861,16 @@
             body += `<span>${data.already_synced}</span> ya estaban sincronizadas.<br>`;
         }
         if (hasCompleted) {
-            body += `🧹 <span>${data.completed_count}</span> tareas completadas fueron eliminadas.`;
+            body += `🧹 <span>${data.completed_count}</span> tareas completadas fueron eliminadas.<br>`;
         }
+        body += `<br>${data.message || 'Se ha sincronizado todo.'}`;
 
-        showToast(
-          (hasNew || hasCompleted) ? 'success' : 'info',
-          title,
-          body
-        );
+        showToast('success', title, body);
       } catch (e) {
-        showToast('info', '❌ Error', 'No se pudo conectar con el servidor.');
+        showToast('info', '❌ Error', e.message || 'No se pudo conectar con el servidor.');
         console.error(e);
       } finally {
+        btn.disabled = false;
         btn.classList.remove('btn-verify--loading');
         btn.querySelector('.btn-verify__text').textContent = 'Verificar y Sincronizar';
       }

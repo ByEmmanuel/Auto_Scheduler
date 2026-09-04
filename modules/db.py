@@ -69,16 +69,41 @@ def mark_task_as_synced(source_id, title, course_name, due_date, source,
                         calendar_event_id, is_urgent=False, link='', description='',
                         course_id='', coursework_id='', submission_id='',
                         submission_state='', recurrence_group=''):
+    """
+    Inserta la tarea si es nueva, o actualiza sus datos de sincronización si
+    ya existía (p. ej. cuando el pipeline re-crea un evento borrado a mano en
+    Calendar). A propósito NO se usa INSERT OR REPLACE: esa estrategia borra
+    y reinserta la fila, lo que resetea a su valor por defecto cualquier
+    columna no pasada aquí (notes, attachments) y perdería las notas del
+    usuario en cada re-sincronización.
+    """
     conn = get_connection()
-    conn.execute('''
-        INSERT OR REPLACE INTO synced_tasks
-            (source_id, title, course_name, due_date, source, is_urgent,
-             calendar_event_id, link, description, course_id, coursework_id,
-             submission_id, submission_state, recurrence_group)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (source_id, title, course_name, due_date, source, int(is_urgent),
-          calendar_event_id, link, description, course_id, coursework_id,
-          submission_id, submission_state, recurrence_group))
+    existing = conn.execute(
+        'SELECT 1 FROM synced_tasks WHERE source_id = ?', (source_id,)
+    ).fetchone()
+
+    if existing:
+        conn.execute('''
+            UPDATE synced_tasks SET
+                title = ?, course_name = ?, due_date = ?, source = ?, is_urgent = ?,
+                calendar_event_id = ?, link = ?, description = ?, course_id = ?,
+                coursework_id = ?, submission_id = ?, submission_state = ?,
+                status = 'pending'
+            WHERE source_id = ?
+        ''', (title, course_name, due_date, source, int(is_urgent),
+              calendar_event_id, link, description, course_id, coursework_id,
+              submission_id, submission_state, source_id))
+    else:
+        conn.execute('''
+            INSERT INTO synced_tasks
+                (source_id, title, course_name, due_date, source, is_urgent,
+                 calendar_event_id, link, description, course_id, coursework_id,
+                 submission_id, submission_state, recurrence_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (source_id, title, course_name, due_date, source, int(is_urgent),
+              calendar_event_id, link, description, course_id, coursework_id,
+              submission_id, submission_state, recurrence_group))
+
     conn.commit()
     conn.close()
 

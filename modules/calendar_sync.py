@@ -2,6 +2,7 @@ import os
 import sys
 import datetime
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from dateutil import parser as date_parser
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -136,6 +137,28 @@ def add_task_to_calendar(task: dict, is_urgent: bool = False, reminder_minutes: 
     except Exception as e:
         print(f"  ❌ Error al crear evento '{task.get('title')}': {e}")
         return None
+
+
+def event_exists(event_id: str) -> bool:
+    """
+    Confirma si un evento sigue vivo en Google Calendar (no fue borrado ni
+    cancelado a mano). Se usa en el Paso 1 del pipeline para detectar
+    "drift" entre la BD local y el calendario real antes de tocar Classroom.
+    """
+    service = get_calendar_service()
+    try:
+        event = service.events().get(calendarId='primary', eventId=event_id).execute()
+        return event.get('status') != 'cancelled'
+    except HttpError as e:
+        if e.resp.status in (404, 410):
+            return False
+        # Error transitorio (red, cuota, etc.): asumimos que sigue existiendo
+        # para no arriesgarnos a recrear (y duplicar) un evento que sí está.
+        print(f"  ⚠️  No se pudo verificar el evento {event_id}: {e}")
+        return True
+    except Exception as e:
+        print(f"  ⚠️  No se pudo verificar el evento {event_id}: {e}")
+        return True
 
 
 def delete_calendar_event(event_id: str) -> bool:
