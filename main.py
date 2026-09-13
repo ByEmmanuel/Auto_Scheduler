@@ -3,9 +3,10 @@ main.py  –  Auto Scheduler
 
 Pipeline de sincronización (4 pasos, ver también
 memory/classroom-calendar-sync-pipeline.md):
-  1. Calendar → local:  confirma que los eventos guardados en la BD siguen
-     vivos en Google Calendar; si alguno fue borrado a mano, se limpia el
-     registro local para que el Paso 3 lo re-cree (sin duplicar nada aquí).
+  1. Calendar → local:  se revisa Calendar primero. Confirma que los eventos
+     guardados siguen vivos (si uno fue borrado a mano se limpia el registro
+     local para que el Paso 3 lo re-cree) e importa las notas que el usuario
+     escribió a mano en Google Calendar, por ejemplo desde el celular.
   2. Local → Classroom:  descarga las tareas pendientes actuales.
   3. Diff Classroom vs. local:  crea en Calendar solo lo que está en
      Classroom y no tiene ya un evento vivo en local; retira lo entregado.
@@ -21,11 +22,22 @@ from modules import sync_pipeline
 
 
 def _print_summary(summary: dict):
-    print(f"\n① Calendar → local: {summary['calendar_checked']} eventos verificados.")
+    print(f"\n① Calendar → local: {summary['calendar_checked']} eventos verificados, "
+          f"{summary['calendar_scanned']} revisados en el calendario.")
     if summary['calendar_healed']:
         print(f"   🔧 {len(summary['calendar_healed'])} evento(s) borrados a mano en Calendar, marcados para re-crear:")
         for rec in summary['calendar_healed']:
             print(f"      · {rec['title']}")
+    if summary['calendar_removed']:
+        print(f"   🗑️  {len(summary['calendar_removed'])} nota(s) borradas desde Calendar, retiradas del tablero:")
+        for rec in summary['calendar_removed']:
+            print(f"      · {rec['title']}")
+    if summary['calendar_imported']:
+        print(f"   📥 {len(summary['calendar_imported'])} nota(s) nuevas traídas de Google Calendar:")
+        for task in summary['calendar_imported']:
+            print(f"      · {task['title']}")
+    if summary['calendar_updated']:
+        print(f"   🔄 {len(summary['calendar_updated'])} nota(s) actualizadas desde Calendar.")
 
     print(f"\n② Local → Classroom: {summary['classroom_total']} tareas pendientes encontradas.")
 

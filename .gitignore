@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Dependencias del dashboard nuevo (web/next). El build compilado en
+# web/static/next SÍ se versiona: así /next funciona tras un clone sin
+# necesidad de tener Node instalado.
+node_modules/
+
 # Virtual Environments
 venv/
 env/

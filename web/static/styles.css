@@ -1040,3 +1040,89 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Calendario de selección múltiple del modal manual ──────────────────────
+   Permite marcar días sueltos ("el 8, el 12, el 14 y el 20") en vez de una
+   sola fecha o un intervalo regular. */
+.daypick {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem;
+  margin: 0.5rem 0;
+}
+
+.daypick__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.daypick__month {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: capitalize;
+}
+
+.daypick__nav {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  transition: all 0.15s ease;
+}
+
+.daypick__nav:hover { border-color: var(--border-strong); color: var(--text); }
+
+.daypick__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.daypick__dow {
+  color: var(--text-faint);
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding-bottom: 0.25rem;
+  text-align: center;
+}
+
+.daypick__day {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  padding: 0.4rem 0;
+  transition: all 0.15s ease;
+}
+
+.daypick__day:hover { border-color: var(--border-strong); color: var(--text); }
+.daypick__day--empty { cursor: default; visibility: hidden; }
+.daypick__day--past { opacity: 0.45; }
+.daypick__day--today { color: var(--accent-text); font-weight: 700; }
+
+.daypick__day--on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.daypick__summary {
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+}

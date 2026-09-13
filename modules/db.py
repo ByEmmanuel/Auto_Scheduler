@@ -117,6 +117,20 @@ def update_task_notes(source_id: str, notes: str):
     conn.close()
 
 
+def update_task_due_date(source_id: str, due_date: str):
+    """Reprograma una tarea (drag & drop del dashboard nuevo).
+
+    Solo toca la fecha local: mover el evento en Google Calendar es
+    responsabilidad de quien llama (`calendar_sync.update_calendar_event_datetime`).
+    """
+    conn = get_connection()
+    conn.execute(
+        'UPDATE synced_tasks SET due_date = ? WHERE source_id = ?', (due_date, source_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def update_task_status(source_id: str, status: str):
     conn = get_connection()
     conn.execute(
@@ -131,6 +145,42 @@ def update_calendar_event_id(source_id: str, calendar_event_id: str):
         'UPDATE synced_tasks SET calendar_event_id = ? WHERE source_id = ?', 
         (calendar_event_id, source_id)
     )
+    conn.commit()
+    conn.close()
+
+
+def get_known_event_ids() -> set:
+    """
+    Todos los `calendar_event_id` que la BD ya conoce, sin filtrar por estado.
+
+    La importación desde Google Calendar (Paso 0 del pipeline) los usa para
+    saber qué eventos son suyos y cuáles escribió el usuario a mano en su
+    celular; se incluyen los completados para no reimportar como nota algo que
+    ya se archivó.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT calendar_event_id FROM synced_tasks WHERE calendar_event_id != ''"
+    ).fetchall()
+    conn.close()
+    return {r['calendar_event_id'] for r in rows if r['calendar_event_id']}
+
+
+def update_imported_task(source_id: str, title: str, due_date: str,
+                         description: str, link: str, calendar_event_id: str):
+    """
+    Refresca una tarea importada de Google Calendar con lo que dice el evento.
+
+    Solo toca los campos que manda Calendar: `notes`, `status` y la urgencia
+    son del dashboard y se conservan, para que reeditar el evento en el celular
+    no borre lo que el usuario escribió aquí.
+    """
+    conn = get_connection()
+    conn.execute('''
+        UPDATE synced_tasks SET
+            title = ?, due_date = ?, description = ?, link = ?, calendar_event_id = ?
+        WHERE source_id = ?
+    ''', (title, due_date, description, link, calendar_event_id, source_id))
     conn.commit()
     conn.close()
 

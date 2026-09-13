@@ -78,15 +78,40 @@ comporten exactamente igual). El pipeline sigue este orden — **Calendar
 primero, Classroom después** — precisamente para no duplicar tareas que ya
 tienen un evento vivo en el calendario:
 
-### Paso 1: Calendar → local (reconciliación)
+### Paso 1a: Calendar → local (reconciliación)
 *   **Función:** `reconcile_calendar_with_local()` / `calendar_sync.event_exists()`
 *   Antes de tocar Classroom, el sistema recorre la base de datos local
     (`scheduler.db`, tabla `synced_tasks`) y confirma en Google Calendar que
     cada evento guardado (`calendar_event_id`) **sigue existiendo**.
-*   Si un evento fue borrado o cancelado a mano en Calendar, se limpia
-    **solo** el `calendar_event_id` de ese registro local (nunca se crea ni
-    se borra nada en este paso), dejándolo marcado para que el Paso 3 lo
-    vuelva a crear sin duplicar el registro.
+*   Si el evento de una tarea de Classroom o manual fue borrado a mano en
+    Calendar, se limpia **solo** su `calendar_event_id` (nunca se crea ni se
+    borra nada en este paso), dejándolo marcado para que el Paso 3 lo vuelva a
+    crear sin duplicar el registro.
+*   Si el que desapareció era una nota importada del propio Calendar
+    (`source='calendar'`), se borra el registro local: esa nota vive en
+    Calendar, así que borrarla allá —por ejemplo desde el celular— también la
+    quita del tablero.
+
+### Paso 1b: Calendar → local (importación)
+*   **Función:** `import_from_calendar()` / `calendar_sync.list_primary_events()`
+*   Trae al tablero los eventos que el usuario escribió **a mano en Google
+    Calendar** (típicamente desde el celular) y que la app no conoce. Se
+    guardan con `source='calendar'` y `source_id = "calendar_<eventId>"`, que
+    es estable entre dispositivos: reimportar el mismo evento lo actualiza en
+    vez de duplicarlo.
+*   Se descartan los eventos que creó la propia app (llevan la marca privada
+    `autoScheduler=task`, o su id ya está en la BD), las invitaciones de otras
+    personas y los cancelados.
+*   La fecha local de una nota importada es la de **inicio** del evento (si
+    apuntaste algo a las 15:00, eso es lo que ves); un evento de día completo
+    se ancla a las 23:59 de ese día.
+*   Ventana: 7 días hacia atrás y 120 hacia adelante. De las **series
+    repetidas** solo entran las instancias de las próximas dos semanas
+    (`RECURRING_HORIZON_DAYS`): una clase cada dos días expandiría 56 tarjetas
+    y dejaría el tablero ilegible. Las siguientes se importan solas conforme
+    avanzan los días.
+*   El dashboard dispara este paso **solo** (`POST /api/sync/calendar`) cada
+    vez que se abre, sin tocar Classroom, que es la consulta lenta.
 
 ### Paso 2: Local → Classroom (extracción)
 *   **Módulo:** `classroom_api.py`
@@ -144,8 +169,29 @@ python main.py          # corre el pipeline por consola
 python web/server.py    # levanta el dashboard en http://localhost:5050
 ```
 
-Al correr el pipeline (por `start.sh`, `main.py` o el botón "Verificar y
-Sincronizar" del dashboard) la consola/web mostrará en tiempo real:
+### Dashboard — `http://localhost:5050`
+
+La página principal es la app de React (Vite + React + TypeScript + Tailwind
+v4 + dnd-kit), cuyo código está en `web/next/`. Tiene drag & drop para
+reprogramar las tareas atrasadas, notas con guardado automático (editables
+desde la propia tarjeta) y tema claro/oscuro. La antigua dirección `/next`
+redirige a `/`, y el dashboard anterior (HTML + JS sin compilar) sigue
+disponible en `http://localhost:5050/clasico`.
+
+```bash
+cd web/next
+npm install          # solo la primera vez
+npm run build        # compila a web/static/next (lo que Flask sirve en /)
+npm run dev          # opcional: front en :5173 con recarga en caliente,
+                     # hablando con el Flask de :5050
+```
+
+El resultado del build se versiona, así que tras un `git clone` el dashboard
+funciona sin necesidad de Node; solo hace falta recompilar si se toca el
+código de `web/next/`.
+
+Al correr el pipeline (por `start.sh`, `main.py` o el botón "Sincronizar" del
+dashboard) la consola/web mostrará en tiempo real:
 1. Cuántos eventos de Calendar se verificaron y cuántos hubo que sanar.
 2. Cuántas tareas pendientes se encontraron en Classroom.
 3. Cuántas tareas nuevas se sincronizaron y cuántas se limpiaron por entregadas.

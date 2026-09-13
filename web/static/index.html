@@ -144,8 +144,26 @@
         </div>
         <input type="hidden" id="manual-type" value="Tarea Manual">
 
+        <div class="modal__label-standalone">// CUÁNDO</div>
+        <div class="modal__chips" id="manual-when-chips">
+          <button class="modal__chip modal__chip--active" type="button" data-value="single">Un día</button>
+          <button class="modal__chip" type="button" data-value="multi">Varios días</button>
+        </div>
+
+        <!-- Calendario de días sueltos: se marcan los que se quieran y se crea
+             un evento en cada uno, todos a la misma hora. -->
+        <div class="daypick" id="manual-daypick" style="display:none;">
+          <div class="daypick__head">
+            <button class="daypick__nav" type="button" id="daypick-prev" aria-label="Mes anterior">‹</button>
+            <span class="daypick__month" id="daypick-month"></span>
+            <button class="daypick__nav" type="button" id="daypick-next" aria-label="Mes siguiente">›</button>
+          </div>
+          <div class="daypick__grid" id="daypick-grid"></div>
+          <div class="daypick__summary" id="daypick-summary"></div>
+        </div>
+
         <div class="minimal-row">
-          <div class="minimal-field">
+          <div class="minimal-field" id="manual-date-field">
             <span class="minimal-icon">📅</span>
             <input type="date" id="manual-date-input" class="minimal-date">
           </div>
@@ -164,7 +182,7 @@
           <button class="modal__chip" type="button" data-value="1440">1 día antes</button>
         </div>
 
-        <div class="modal__label-standalone">// REPETICIÓN</div>
+        <div class="modal__label-standalone" id="manual-repeat-label">// REPETICIÓN</div>
         <div class="modal__chips" id="manual-repeat-chips">
           <button class="modal__chip modal__chip--active" type="button" data-value="0">No repetir</button>
           <button class="modal__chip" type="button" data-value="1">Diario</button>
@@ -272,7 +290,121 @@
         });
       });
 
+      // Modo "Cuándo": un día suelto o varios días marcados en el calendario.
+      document.querySelectorAll('#manual-when-chips .modal__chip').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          document.querySelectorAll('#manual-when-chips .modal__chip')
+            .forEach(c => c.classList.remove('modal__chip--active'));
+          e.currentTarget.classList.add('modal__chip--active');
+          setWhenMode(e.currentTarget.dataset.value);
+        });
+      });
+
+      document.getElementById('daypick-prev').addEventListener('click', () => shiftDaypick(-1));
+      document.getElementById('daypick-next').addEventListener('click', () => shiftDaypick(1));
+
     });
+
+    // ── Calendario de días sueltos ─────────────────────────────────────────
+    // El modal ofrece dos formas de fechar una nota: un solo día (con la
+    // repetición por intervalo de siempre) o varios días concretos marcados a
+    // mano — "el 8, el 12, el 14 y el 20" —, que no guardan ninguna relación
+    // entre sí y por eso no se pueden expresar como un patrón.
+    const DAYPICK_MAX = 60;
+    const DAYPICK_DOW = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+    const DAYPICK_MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+    let manualWhenMode = 'single';
+    let manualDates = [];
+    let daypickYear = new Date().getFullYear();
+    let daypickMonth = new Date().getMonth();
+
+    /** 'YYYY-MM-DD' en hora local (toISOString daría UTC y correría el día). */
+    function dayKey(d) {
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    function setWhenMode(mode) {
+      manualWhenMode = mode;
+      const multi = mode === 'multi';
+
+      // Con días marcados a mano, ni el campo de fecha único ni la repetición
+      // por intervalo tienen nada que decir.
+      document.getElementById('manual-daypick').style.display = multi ? 'block' : 'none';
+      document.getElementById('manual-date-field').style.display = multi ? 'none' : 'flex';
+      document.getElementById('manual-repeat-label').style.display = multi ? 'none' : '';
+      document.getElementById('manual-repeat-chips').style.display = multi ? 'none' : '';
+      document.getElementById('manual-repeat-config').style.display =
+        multi ? 'none' : (document.querySelector('#manual-repeat-chips .modal__chip--active')?.dataset.value === '0' ? 'none' : 'flex');
+
+      if (multi) {
+        // El modal suele abrirse desde una columna concreta del tablero: ese
+        // día se hereda como primera marca en vez de partir de cero.
+        if (manualDates.length === 0) {
+          const seed = document.getElementById('manual-date-input').value;
+          if (seed) manualDates = [seed];
+        }
+        const anchor = new Date(`${manualDates[0] || dayKey(new Date())}T00:00:00`);
+        daypickYear = anchor.getFullYear();
+        daypickMonth = anchor.getMonth();
+        renderDaypick();
+      }
+    }
+
+    function shiftDaypick(delta) {
+      const d = new Date(daypickYear, daypickMonth + delta, 1);
+      daypickYear = d.getFullYear();
+      daypickMonth = d.getMonth();
+      renderDaypick();
+    }
+
+    function toggleDaypickDay(key) {
+      if (manualDates.includes(key)) {
+        manualDates = manualDates.filter(k => k !== key);
+      } else if (manualDates.length < DAYPICK_MAX) {
+        manualDates = [...manualDates, key].sort();
+      }
+      renderDaypick();
+    }
+
+    function renderDaypick() {
+      document.getElementById('daypick-month').textContent =
+        `${DAYPICK_MONTHS[daypickMonth]} ${daypickYear}`;
+
+      const today = dayKey(new Date());
+      const daysInMonth = new Date(daypickYear, daypickMonth + 1, 0).getDate();
+      // getDay() es 0=domingo; la semana del calendario empieza en lunes.
+      const lead = (new Date(daypickYear, daypickMonth, 1).getDay() + 6) % 7;
+
+      const cells = DAYPICK_DOW.map(d => `<div class="daypick__dow">${d}</div>`);
+      for (let i = 0; i < lead; i++) {
+        cells.push('<button class="daypick__day daypick__day--empty" type="button" disabled></button>');
+      }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const key = dayKey(new Date(daypickYear, daypickMonth, day));
+        const on = manualDates.includes(key);
+        const cls = ['daypick__day'];
+        if (on) cls.push('daypick__day--on');
+        else if (key === today) cls.push('daypick__day--today');
+        else if (key < today) cls.push('daypick__day--past');
+        // Al llegar al tope solo se puede desmarcar, nunca añadir más.
+        const disabled = !on && manualDates.length >= DAYPICK_MAX ? ' disabled' : '';
+        cells.push(`<button class="${cls.join(' ')}" type="button" data-key="${key}"${disabled}>${day}</button>`);
+      }
+
+      const grid = document.getElementById('daypick-grid');
+      grid.innerHTML = cells.join('');
+      grid.querySelectorAll('.daypick__day[data-key]').forEach(btn => {
+        btn.addEventListener('click', () => toggleDaypickDay(btn.dataset.key));
+      });
+
+      const n = manualDates.length;
+      document.getElementById('daypick-summary').textContent = n === 0
+        ? 'Marca los días que quieras. Se creará un evento en cada uno.'
+        : `${n} ${n === 1 ? 'fecha marcada' : 'fechas marcadas'} · ${n} ${n === 1 ? 'evento' : 'eventos'}`;
+    }
 
     // ── Helpers ──────────────────────────────────────────────────────────
     const COURSE_COLORS = {};
@@ -604,6 +736,14 @@
       document.getElementById('manual-time').value = '23:59';
       document.getElementById('manual-notes').value = '';
 
+      // El calendario múltiple arranca vacío en cada apertura: si no, la nota
+      // siguiente heredaría los días marcados para la anterior.
+      manualDates = [];
+      const whenChips = document.querySelectorAll('#manual-when-chips .modal__chip');
+      whenChips.forEach(c => c.classList.remove('modal__chip--active'));
+      if (whenChips.length > 0) whenChips[0].classList.add('modal__chip--active');
+      setWhenMode('single');
+
       document.getElementById('manual-modal-overlay').classList.add('modal-overlay--visible');
       document.body.style.overflow = 'hidden';
       
@@ -628,8 +768,12 @@
         .filter(v => v !== 'none')
         .map(v => parseInt(v));
 
+      const multi = manualWhenMode === 'multi';
+
+      // En el modo de varios días la repetición por intervalo no aplica: los
+      // días marcados ya son exactamente los que el usuario quiere.
       const repeatChip = document.querySelector('#manual-repeat-chips .modal__chip--active');
-      const repeatVal = repeatChip ? repeatChip.dataset.value : '0';
+      const repeatVal = (!multi && repeatChip) ? repeatChip.dataset.value : '0';
       const repeat_interval_days = repeatVal !== '0'
         ? parseInt(document.getElementById('manual-repeat-interval').value) || 1
         : null;
@@ -642,6 +786,14 @@
         return;
       }
 
+      if (multi && manualDates.length === 0) {
+        const mToast = document.getElementById('manual-modal-toast');
+        mToast.textContent = '❌ Marca al menos un día en el calendario.';
+        mToast.className = 'modal__toast modal__toast--visible modal__toast--error';
+        setTimeout(() => mToast.className = 'modal__toast', 4000);
+        return;
+      }
+
       btn.classList.add('modal__btn--loading');
 
       try {
@@ -649,7 +801,9 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title, time, date, type, notes, reminder_minutes,
+            title, time, type, notes, reminder_minutes,
+            date: multi ? manualDates[0] : date,
+            dates: multi ? manualDates : null,
             repeat_interval_days, repeat_count,
           }),
         });
@@ -820,6 +974,39 @@
       }
     }
 
+    // ── Calendar → local (automático al abrir) ───────────────────────────
+    // Trae las notas que el usuario escribió a mano en Google Calendar, casi
+    // siempre desde el celular, para que estén en el tablero sin pulsar nada.
+    // No consulta Classroom: esa es la parte lenta y sigue en "Verificar".
+    async function pullCalendar() {
+      try {
+        const res = await fetch('/api/sync/calendar', { method: 'POST' });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const changed =
+          data.calendar_imported.length + data.calendar_updated + data.calendar_removed;
+        if (changed === 0) return;
+
+        await loadTasks();
+
+        if (data.calendar_imported.length > 0) {
+          const titles = data.calendar_imported.slice(0, 3).map(t => `· ${t.title}`).join('<br>');
+          showToast(
+            'success',
+            data.calendar_imported.length === 1
+              ? '📥 Nota traída de Google Calendar'
+              : `📥 ${data.calendar_imported.length} notas traídas de Google Calendar`,
+            titles,
+          );
+        }
+      } catch (e) {
+        // Silencioso a propósito: es una sincronización de fondo que el usuario
+        // no pidió. Si Calendar falla, el tablero se ve con lo que ya había.
+        console.warn('No se pudo sincronizar con Calendar:', e);
+      }
+    }
+
     // ── Verify & Sync ────────────────────────────────────────────────────
     async function verifySync() {
       const btn = document.getElementById('btn-verify');
@@ -852,6 +1039,12 @@
         let body = '';
         if (hasHealed) {
             body += `🔧 <span>${data.calendar_healed}</span> evento(s) borrados a mano en Calendar fueron re-creados.<br>`;
+        }
+        if (data.calendar_imported && data.calendar_imported.length > 0) {
+            body += `📥 <span>${data.calendar_imported.length}</span> nota(s) traídas de Google Calendar.<br>`;
+        }
+        if (data.calendar_removed > 0) {
+            body += `🗑️ <span>${data.calendar_removed}</span> nota(s) borradas desde Calendar.<br>`;
         }
         if (hasNew || !hasCompleted) {
             body += `Se verificaron <span>${data.classroom_total}</span> tareas en Classroom.<br>`;
@@ -892,6 +1085,7 @@
 
     // ── Init ──────────────────────────────────────────────────────────────
     loadTasks();
+    pullCalendar();
   </script>
 
 </body>
