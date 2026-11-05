@@ -163,7 +163,7 @@ export function NotesEditor({
         }}
         className={cx(
           'w-full resize-none rounded-lg border border-line bg-sunken text-ink placeholder:text-ink-faint',
-          'transition-colors duration-150 outline-none focus:border-accent/50 focus:bg-surface',
+          'transition-colors duration-150 outline-none focus:border-accent/50 focus:bg-black/40',
           compact ? 'px-2.5 py-2 text-[12.5px] leading-relaxed' : 'px-3 py-2.5 text-[13.5px] leading-relaxed',
         )}
       />

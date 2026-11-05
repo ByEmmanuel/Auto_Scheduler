@@ -12,6 +12,15 @@ export default defineConfig({
   build: {
     outDir: '../static/next',
     emptyOutDir: true,
+    // three.js (el shader de fondo) va en su propio chunk: casi nunca cambia,
+    // así que el navegador lo conserva en caché entre builds de la app. Él
+    // solo pesa ~510 kB sin comprimir, de ahí el límite de aviso más alto.
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks: { three: ['three'] },
+      },
+    },
   },
   server: {
     port: 5173,

@@ -1,16 +1,31 @@
 import { useDroppable } from '@dnd-kit/core'
 import type { Group, Task } from '../types'
 import { dayLabel } from '../lib/date'
-import { IconAlert, IconInbox, IconPlus } from './Icons'
+import { XmasEmoji } from './Christmas'
+import { IconAlert, IconCheck, IconInbox, IconPlus } from './Icons'
 import { TaskCard } from './TaskCard'
-import { cx } from './ui'
+import { Button, cx } from './ui'
+
+/** Selección de varias atrasadas para completarlas de una vez. */
+export interface Selection {
+  active: boolean
+  ids: Set<string>
+  busy: boolean
+  onStart: () => void
+  onCancel: () => void
+  onToggle: (task: Task) => void
+  onToggleAll: (tasks: Task[]) => void
+  onComplete: () => void
+}
 
 interface ColumnProps {
   group: Group
   dragging: boolean
   onOpen: (task: Task) => void
   onNotesSaved: (taskId: string, notes: string) => void
+  onComplete: (task: Task) => void
   onAdd: (dateKey: string) => void
+  selection?: Selection
 }
 
 function ColumnHeader({ group }: { group: Group }) {
@@ -21,8 +36,10 @@ function ColumnHeader({ group }: { group: Group }) {
           <IconAlert className="size-[18px]" />
         </span>
         <div className="min-w-0">
-          <div className="text-[18px] leading-tight font-semibold text-ink">Atrasadas</div>
-          <div className="mt-0.5 text-[12.5px] text-ink-dim">Arrástralas a un día</div>
+          <div className="text-[20px] leading-tight font-semibold tracking-tighter text-ink">
+            Atrasadas <XmasEmoji emoji="🥶" className="text-[15px]" />
+          </div>
+          <div className="mt-0.5 text-[12.5px] text-ink-dim">Arrástralas a un día o complétalas</div>
         </div>
       </div>
     )
@@ -35,7 +52,9 @@ function ColumnHeader({ group }: { group: Group }) {
           <IconInbox className="size-[18px]" />
         </span>
         <div>
-          <div className="text-[18px] leading-tight font-semibold text-ink">Sin fecha</div>
+          <div className="text-[20px] leading-tight font-semibold tracking-tighter text-ink">
+            Sin fecha <XmasEmoji emoji="🧦" className="text-[15px]" />
+          </div>
           <div className="mt-0.5 text-[12.5px] text-ink-dim">Arrástralas a un día</div>
         </div>
       </div>
@@ -48,19 +67,22 @@ function ColumnHeader({ group }: { group: Group }) {
     <div className="min-w-0">
       <div
         className={cx(
-          'text-[20px] leading-tight font-semibold tracking-tight',
+          'text-[22px] leading-tight font-semibold tracking-tighter',
           isToday ? 'text-accent' : 'text-ink',
         )}
       >
-        {headline}
+        {headline} <XmasEmoji seed={group.key} emoji={isToday ? '🎅' : undefined} className="text-[16px]" />
       </div>
       <div className="tnum mt-0.5 text-[13px] text-ink-dim first-letter:uppercase">{sub}</div>
     </div>
   )
 }
 
-function Column({ group, dragging, onOpen, onNotesSaved, onAdd }: ColumnProps) {
+function Column({ group, dragging, onOpen, onNotesSaved, onComplete, onAdd, selection }: ColumnProps) {
   const isDay = group.kind === 'day'
+  const selecting = Boolean(selection?.active)
+  const picked = selection ? group.tasks.filter((t) => selection.ids.has(t.id)).length : 0
+  const allPicked = picked === group.tasks.length && picked > 0
   const { setNodeRef, isOver } = useDroppable({ id: `day:${group.key}`, disabled: !isDay })
   const isToday = isDay && dayLabel(group.key).isToday
 
@@ -68,22 +90,43 @@ function Column({ group, dragging, onOpen, onNotesSaved, onAdd }: ColumnProps) {
     <section
       ref={setNodeRef}
       className={cx(
-        'flex h-full w-[286px] shrink-0 flex-col rounded-panel border transition-colors duration-200',
+        isToday && 'as-today',
+        'as-column flex h-full w-[286px] shrink-0 flex-col rounded-panel border transition-colors duration-200',
         isOver
-          ? 'border-accent/60 bg-accent-soft'
+          ? 'glass border-accent/70 bg-accent-soft'
           : dragging && isDay
-            ? 'border-dashed border-line-strong bg-surface/60'
+            ? 'glass border-dashed border-line-strong'
             : isToday
-              ? 'border-accent/35 bg-surface'
-              : 'border-line bg-surface',
+              ? 'glass border-accent/45 shadow-[0_0_32px_-8px_rgba(127,180,255,0.45)]'
+              : 'glass border-line',
       )}
     >
       <header className="flex items-start justify-between gap-2 px-4 pt-4 pb-3.5">
         <ColumnHeader group={group} />
         <span className="tnum rounded-full bg-sunken px-2 py-0.5 text-[12px] text-ink-dim">
-          {group.tasks.length}
+          {selecting ? `${picked}/${group.tasks.length}` : group.tasks.length}
         </span>
       </header>
+
+      {selection && group.tasks.length > 1 ? (
+        <div className="-mt-1 flex items-center gap-1.5 px-3 pb-2.5">
+          {selecting ? (
+            <>
+              <Button size="sm" variant="subtle" onClick={() => selection.onToggleAll(group.tasks)}>
+                {allPicked ? 'Ninguna' : 'Todas'}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={selection.onCancel} className="ml-auto">
+                Cancelar
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={selection.onStart}>
+              <IconCheck className="size-3.5" />
+              Seleccionar varias
+            </Button>
+          )}
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
         {group.tasks.map((task, i) => (
@@ -97,6 +140,10 @@ function Column({ group, dragging, onOpen, onNotesSaved, onAdd }: ColumnProps) {
               draggable
               onOpen={onOpen}
               onNotesSaved={onNotesSaved}
+              onComplete={onComplete}
+              selectable={selecting}
+              checked={selection?.ids.has(task.id)}
+              onToggle={selection?.onToggle}
             />
           </div>
         ))}
@@ -105,6 +152,24 @@ function Column({ group, dragging, onOpen, onNotesSaved, onAdd }: ColumnProps) {
           <p className="rounded-card border border-dashed border-line px-3 py-6 text-center text-[12px] text-ink-faint">
             {isOver ? 'Suelta aquí' : 'Sin tareas'}
           </p>
+        ) : null}
+
+        {selecting ? (
+          <div className="sticky bottom-0 mt-auto -mx-3 -mb-3 border-t border-line glass-strong px-3 py-3">
+            <Button
+              variant="primary"
+              size="lg"
+              className="w-full"
+              disabled={picked === 0}
+              loading={selection?.busy}
+              onClick={selection?.onComplete}
+            >
+              {selection?.busy ? null : <IconCheck className="size-[18px]" />}
+              {picked === 0
+                ? 'Elige las que ya hiciste'
+                : `Completar ${picked === 1 ? '1 tarea' : `${picked} tareas`}`}
+            </Button>
+          </div>
         ) : null}
 
         {isDay ? (
@@ -131,10 +196,13 @@ interface BoardProps {
   dragging: boolean
   onOpen: (task: Task) => void
   onNotesSaved: (taskId: string, notes: string) => void
+  onComplete: (task: Task) => void
   onAdd: (dateKey: string) => void
+  /** Solo la columna de atrasadas permite seleccionar varias. */
+  selection: Selection
 }
 
-export function Board({ groups, dragging, onOpen, onNotesSaved, onAdd }: BoardProps) {
+export function Board({ groups, dragging, onOpen, onNotesSaved, onComplete, onAdd, selection }: BoardProps) {
   return (
     <div className="flex h-full gap-3 overflow-x-auto px-5 py-5">
       {groups.map((group) => (
@@ -144,7 +212,9 @@ export function Board({ groups, dragging, onOpen, onNotesSaved, onAdd }: BoardPr
           dragging={dragging}
           onOpen={onOpen}
           onNotesSaved={onNotesSaved}
+          onComplete={onComplete}
           onAdd={onAdd}
+          selection={group.kind === 'overdue' ? selection : undefined}
         />
       ))}
       <div className="w-2 shrink-0" />

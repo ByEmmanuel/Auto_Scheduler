@@ -1,7 +1,11 @@
 import sqlite3
 import os
+import threading
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scheduler.db')
+
+
+_init_lock = threading.Lock()
 
 
 def get_connection():
@@ -11,6 +15,13 @@ def get_connection():
 
 
 def init_db():
+    # Se llama desde varias peticiones a la vez: sin el candado, dos hilos
+    # intentan añadir la misma columna y uno revienta con "duplicate column".
+    with _init_lock:
+        _init_db()
+
+
+def _init_db():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.executescript('''
@@ -33,7 +44,9 @@ def init_db():
             submission_id     TEXT    DEFAULT '',
             submission_state  TEXT    DEFAULT '',
             attachments       TEXT    DEFAULT '[]',
-            recurrence_group  TEXT    DEFAULT ''
+            recurrence_group  TEXT    DEFAULT '',
+            completed_by      TEXT    DEFAULT '',
+            classroom_due     TEXT    DEFAULT ''
         );
     ''')
 
@@ -47,11 +60,105 @@ def init_db():
         'submission_state': "ALTER TABLE synced_tasks ADD COLUMN submission_state TEXT DEFAULT ''",
         'attachments':      "ALTER TABLE synced_tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
         'recurrence_group': "ALTER TABLE synced_tasks ADD COLUMN recurrence_group TEXT DEFAULT ''",
+        'completed_by':     "ALTER TABLE synced_tasks ADD COLUMN completed_by TEXT DEFAULT ''",
+        'classroom_due':    "ALTER TABLE synced_tasks ADD COLUMN classroom_due TEXT DEFAULT ''",
     }
     for col, stmt in migrations.items():
         if col not in existing_cols:
             cursor.execute(stmt)
 
+    # Antes no se anotaba quién cerró una tarea, pero queda una huella: el botón
+    # "Completar" limpiaba el id del evento y la sincronización no.
+    if 'completed_by' not in existing_cols:
+        cursor.execute("""
+            UPDATE synced_tasks
+            SET completed_by = CASE WHEN COALESCE(calendar_event_id, '') = '' THEN 'user' ELSE 'classroom' END
+            WHERE status = 'completed'
+        """)
+
+    # Notas: no son tareas (no vencen, no se completan). Cada una vive en
+    # Google Calendar como evento de día completo, sin alertas.
+    #   status            'active' | 'archived' (borrada aquí o en Calendar)
+    #   needs_push        1 si el último cambio local no llegó a Calendar: la
+    #                     sincronización lo sube en vez de pisarlo con lo de allá
+    #   calendar_updated  campo `updated` del evento la última vez que se
+    #                     escribió o leyó: solo un evento más nuevo se trae
+    cursor.executescript('''
+        CREATE TABLE IF NOT EXISTS notes (
+            id                TEXT PRIMARY KEY,
+            title             TEXT NOT NULL,
+            body              TEXT DEFAULT '',
+            date              TEXT NOT NULL,
+            calendar_event_id TEXT DEFAULT '',
+            calendar_updated  TEXT DEFAULT '',
+            status            TEXT DEFAULT 'active',
+            needs_push        INTEGER DEFAULT 0,
+            created_at        TEXT DEFAULT (datetime('now')),
+            updated_at        TEXT DEFAULT (datetime('now'))
+        );
+    ''')
+
+    conn.commit()
+    conn.close()
+
+
+# ── Notas ──────────────────────────────────────────────────────────────────────
+
+NOTE_FIELDS = {'title', 'body', 'date', 'calendar_event_id', 'calendar_updated',
+               'status', 'needs_push'}
+
+
+def create_note(note_id: str, title: str, body: str, date: str,
+                calendar_event_id: str = '', calendar_updated: str = '',
+                needs_push: bool = False) -> dict:
+    conn = get_connection()
+    conn.execute('''
+        INSERT INTO notes (id, title, body, date, calendar_event_id, calendar_updated, needs_push)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (note_id, title, body, date, calendar_event_id, calendar_updated, int(needs_push)))
+    conn.commit()
+    conn.close()
+    return get_note(note_id)
+
+
+def get_note(note_id: str) -> dict | None:
+    conn = get_connection()
+    row = conn.execute('SELECT * FROM notes WHERE id = ?', (note_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_notes(status: str | None = 'active') -> list[dict]:
+    conn = get_connection()
+    if status is None:
+        rows = conn.execute('SELECT * FROM notes').fetchall()
+    else:
+        rows = conn.execute('SELECT * FROM notes WHERE status = ?', (status,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_note(note_id: str, touch: bool = True, **fields) -> dict | None:
+    """Actualiza los campos dados. `touch=False` para cambios que no hizo el
+    usuario (la sincronización anotando el id o la versión del evento)."""
+    fields = {k: v for k, v in fields.items() if k in NOTE_FIELDS}
+    if 'needs_push' in fields:
+        fields['needs_push'] = int(bool(fields['needs_push']))
+    if not fields:
+        return get_note(note_id)
+    sets = ', '.join(f'{k} = ?' for k in fields)
+    if touch:
+        sets += ", updated_at = datetime('now')"
+    conn = get_connection()
+    conn.execute(f'UPDATE notes SET {sets} WHERE id = ?', (*fields.values(), note_id))
+    conn.commit()
+    conn.close()
+    return get_note(note_id)
+
+
+def delete_note(note_id: str):
+    conn = get_connection()
+    conn.execute('DELETE FROM notes WHERE id = ?', (note_id,))
     conn.commit()
     conn.close()
 
@@ -68,7 +175,7 @@ def is_task_synced(source_id: str) -> bool:
 def mark_task_as_synced(source_id, title, course_name, due_date, source,
                         calendar_event_id, is_urgent=False, link='', description='',
                         course_id='', coursework_id='', submission_id='',
-                        submission_state='', recurrence_group=''):
+                        submission_state='', recurrence_group='', classroom_due=''):
     """
     Inserta la tarea si es nueva, o actualiza sus datos de sincronización si
     ya existía (p. ej. cuando el pipeline re-crea un evento borrado a mano en
@@ -88,21 +195,21 @@ def mark_task_as_synced(source_id, title, course_name, due_date, source,
                 title = ?, course_name = ?, due_date = ?, source = ?, is_urgent = ?,
                 calendar_event_id = ?, link = ?, description = ?, course_id = ?,
                 coursework_id = ?, submission_id = ?, submission_state = ?,
-                status = 'pending'
+                classroom_due = ?, status = 'pending', completed_by = ''
             WHERE source_id = ?
         ''', (title, course_name, due_date, source, int(is_urgent),
               calendar_event_id, link, description, course_id, coursework_id,
-              submission_id, submission_state, source_id))
+              submission_id, submission_state, classroom_due, source_id))
     else:
         conn.execute('''
             INSERT INTO synced_tasks
                 (source_id, title, course_name, due_date, source, is_urgent,
                  calendar_event_id, link, description, course_id, coursework_id,
-                 submission_id, submission_state, recurrence_group)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 submission_id, submission_state, recurrence_group, classroom_due)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (source_id, title, course_name, due_date, source, int(is_urgent),
               calendar_event_id, link, description, course_id, coursework_id,
-              submission_id, submission_state, recurrence_group))
+              submission_id, submission_state, recurrence_group, classroom_due))
 
     conn.commit()
     conn.close()
@@ -131,11 +238,30 @@ def update_task_due_date(source_id: str, due_date: str):
     conn.close()
 
 
-def update_task_status(source_id: str, status: str):
+def update_task_status(source_id: str, status: str, completed_by: str = ''):
+    """Cambia el estado. `completed_by` dice quién cerró la tarea: 'user' es una
+    decisión del usuario que la sincronización respeta; 'classroom' la deshace
+    si Classroom vuelve a darla por pendiente."""
     conn = get_connection()
     conn.execute(
-        'UPDATE synced_tasks SET status = ? WHERE source_id = ?', (status, source_id)
+        'UPDATE synced_tasks SET status = ?, completed_by = ? WHERE source_id = ?',
+        (status, completed_by, source_id)
     )
+    conn.commit()
+    conn.close()
+
+
+def update_classroom_task(source_id: str, title: str, course_name: str, description: str,
+                          link: str, classroom_due: str, due_date: str | None = None):
+    """Refresca lo que manda Classroom. `due_date` solo llega si el profesor
+    cambió la fecha: la del tablero puede haberla movido el usuario."""
+    conn = get_connection()
+    conn.execute('''
+        UPDATE synced_tasks SET
+            title = ?, course_name = ?, description = ?, link = ?, classroom_due = ?,
+            due_date = COALESCE(?, due_date)
+        WHERE source_id = ?
+    ''', (title, course_name, description, link, classroom_due, due_date, source_id))
     conn.commit()
     conn.close()
 
@@ -210,6 +336,30 @@ def get_all_synced(source_id_prefix: str = None, status: str = 'pending'):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_tasks_in_group(recurrence_group: str, status: str | None = 'pending'):
+    """Todas las ocurrencias de una serie (creadas juntas o importadas de una
+    serie repetida de Google Calendar), opcionalmente filtradas por estado."""
+    if not recurrence_group:
+        return []
+    conn = get_connection()
+    query = 'SELECT * FROM synced_tasks WHERE recurrence_group = ?'
+    params = [recurrence_group]
+    if status is not None:
+        query += ' AND status = ?'
+        params.append(status)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_recurrence_group(source_id: str, recurrence_group: str):
+    conn = get_connection()
+    conn.execute('UPDATE synced_tasks SET recurrence_group = ? WHERE source_id = ?',
+                 (recurrence_group, source_id))
+    conn.commit()
+    conn.close()
 
 
 def delete_task(source_id: str):

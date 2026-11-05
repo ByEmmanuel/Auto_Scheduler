@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { addDaysToKey, formatShortDate, todayKey } from '../lib/date'
+import {
+  describeRule,
+  expandRule,
+  WEEK_ORDER,
+  WEEKDAY_LETTER,
+  weekdayOf,
+  type RepeatEnd,
+  type RepeatKind,
+  type RepeatRule,
+} from '../lib/recurrence'
 import { IconBell, IconCalendar, IconClock, IconRepeat } from './Icons'
 import { MultiDatePicker } from './MultiDatePicker'
 import { Button, Chip, cx, Label } from './ui'
@@ -8,10 +18,14 @@ import { Button, Chip, cx, Label } from './ui'
 /** Tope de eventos que crea una sola vez el compositor (igual que el backend). */
 const MAX_DATES = 60
 
-const TYPES = ['Tarea Manual', 'Nota General', 'Recordatorio', 'Lectura', 'Otro']
+// Sin "Nota": eso ahora vive en la pestaña Notas (en Calendar como evento de
+// día completo, sin alertas), no como una entrega con hora.
+const TYPES = ['Tarea Manual', 'Clase', 'Estudio', 'Recordatorio', 'Lectura', 'Otro']
 const TYPE_LABELS: Record<string, string> = {
   'Tarea Manual': 'Tarea',
   'Nota General': 'Nota',
+  Clase: 'Clase',
+  Estudio: 'Estudio',
   Recordatorio: 'Recordatorio',
   Lectura: 'Lectura',
   Otro: 'Otro',
@@ -24,17 +38,26 @@ const ALERTS: Array<{ value: number; label: string }> = [
   { value: 1440, label: '1 día' },
 ]
 
-const REPEATS = [
-  { value: '0', label: 'No repetir' },
-  { value: '1', label: 'Diario' },
-  { value: '7', label: 'Semanal' },
-  { value: 'custom', label: 'Personalizado' },
+const REPEATS: Array<{ value: RepeatKind; label: string }> = [
+  { value: 'none', label: 'No repetir' },
+  { value: 'weekly', label: 'Semanal' },
+  { value: 'daily', label: 'Diario' },
+  { value: 'every', label: 'Cada N días' },
 ]
+
+const END_KINDS: Array<{ value: RepeatEnd['kind']; label: string }> = [
+  { value: 'weeks', label: 'Durante' },
+  { value: 'count', label: 'Número de veces' },
+  { value: 'until', label: 'Hasta' },
+]
+
+/** Fechas de la vista previa antes de resumir con "+N más". */
+const PREVIEW_MAX = 10
 
 interface Props {
   initialDate?: string
   onClose: () => void
-  onCreated: (count: number) => void
+  onCreated: (count: number, calendarFailed: number) => void
 }
 
 export function Composer({ initialDate, onClose, onCreated }: Props) {
@@ -47,10 +70,16 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
   // 'multi'  = varios días sueltos marcados en el calendario.
   const [mode, setMode] = useState<'single' | 'multi'>('single')
   const [dates, setDates] = useState<string[]>([])
-  const [alerts, setAlerts] = useState<number[]>([])
-  const [repeat, setRepeat] = useState('0')
-  const [interval, setIntervalDays] = useState(1)
-  const [count, setCount] = useState(5)
+  // Una alerta de fábrica: la app es para no olvidarse de las cosas, así que
+  // lo seguro es avisar; quitarla es un clic.
+  const [alerts, setAlerts] = useState<number[]>([60])
+  const [repeatKind, setRepeatKind] = useState<RepeatKind>('none')
+  const [weekdays, setWeekdays] = useState<number[]>([])
+  const [everyDays, setEveryDays] = useState(2)
+  const [endKind, setEndKind] = useState<RepeatEnd['kind']>('weeks')
+  const [endWeeks, setEndWeeks] = useState(5)
+  const [endCount, setEndCount] = useState(5)
+  const [endDate, setEndDate] = useState(() => addDaysToKey(today, 34))
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -71,14 +100,24 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
   }, [onClose])
 
   const multi = mode === 'multi'
-  // La repetición por intervalo solo tiene sentido en el modo de un día: con
-  // días marcados a mano, el usuario ya dijo exactamente cuáles quiere.
-  const repeats = !multi && repeat !== '0'
-  const totalEvents = multi
-    ? dates.length
-    : repeats
-      ? Math.max(1, Math.min(count, MAX_DATES))
-      : 1
+  // La repetición solo tiene sentido en el modo de un día: con días marcados a
+  // mano, el usuario ya dijo exactamente cuáles quiere.
+  const repeats = !multi && repeatKind !== 'none'
+
+  const rule: RepeatRule = {
+    kind: repeatKind,
+    // Semanal sin días marcados usa el día de la fecha de inicio.
+    weekdays: weekdays.length > 0 ? weekdays : [weekdayOf(date)],
+    everyDays,
+    end:
+      endKind === 'weeks'
+        ? { kind: 'weeks', weeks: endWeeks }
+        : endKind === 'count'
+          ? { kind: 'count', count: endCount }
+          : { kind: 'until', date: endDate },
+  }
+  const series = repeats ? expandRule(date, rule, MAX_DATES, time) : null
+  const totalEvents = multi ? dates.length : series ? series.dates.length : 1
 
   async function submit() {
     if (!title.trim()) {
@@ -90,22 +129,28 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
       setError('Marca al menos un día en el calendario.')
       return
     }
+    if (series && series.dates.length === 0) {
+      setError('Con esa regla no cae ninguna fecha. Revisa los días o el final.')
+      return
+    }
     setSaving(true)
     setError('')
     try {
+      // Tanto los días marcados a mano como una serie repetida viajan como
+      // lista de fechas concretas: el backend crea un evento en cada una.
+      const list = multi ? dates : series ? series.dates : null
       const res = await api.createManual({
         title: title.trim(),
-        // En el modo de varios días, `dates` manda y el backend ignora el resto.
-        date: multi ? dates[0] : date,
-        dates: multi ? dates : null,
+        date: list ? list[0] : date,
+        dates: list,
         time,
         type,
         notes: notes.trim(),
         reminder_minutes: alerts,
-        repeat_interval_days: repeats ? interval : null,
-        repeat_count: repeats ? totalEvents : 1,
+        repeat_interval_days: null,
+        repeat_count: 1,
       })
-      onCreated(res.created?.length ?? 1)
+      onCreated(res.created?.length ?? 1, res.calendar_failed ?? 0)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo guardar')
     } finally {
@@ -125,7 +170,7 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center">
-      <div className="anim-fade-in absolute inset-0 bg-black/40 backdrop-blur-[3px]" onClick={onClose} />
+      <div className="anim-fade-in absolute inset-0 bg-black/60" onClick={onClose} />
 
       <div
         role="dialog"
@@ -134,7 +179,7 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit()
         }}
-        className="anim-pop relative w-full max-w-[520px] overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
+        className="anim-pop relative w-full max-w-[520px] overflow-hidden glass-strong rounded-panel border border-line shadow-panel"
       >
         {/* Título: campo sin marco, el foco visual entra directo al texto. */}
         <div className="px-6 pt-6 pb-4">
@@ -266,37 +311,147 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
               {REPEATS.map((r) => (
                 <Chip
                   key={r.value}
-                  active={repeat === r.value}
+                  active={repeatKind === r.value}
                   onClick={() => {
-                    setRepeat(r.value)
-                    if (r.value !== '0' && r.value !== 'custom') setIntervalDays(Number(r.value))
+                    setRepeatKind(r.value)
+                    if (r.value === 'weekly' && weekdays.length === 0) setWeekdays([weekdayOf(date)])
                   }}
                 >
                   {r.label}
                 </Chip>
               ))}
             </div>
+
             {repeats ? (
-              <div className="mt-2.5 flex items-center gap-2 text-[12.5px] text-ink-dim">
-                <span>cada</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={365}
-                  value={interval}
-                  onChange={(e) => setIntervalDays(Math.max(1, Number(e.target.value) || 1))}
-                  className={cx(inputCls, 'tnum w-16 text-center')}
-                />
-                <span>días,</span>
-                <input
-                  type="number"
-                  min={2}
-                  max={60}
-                  value={count}
-                  onChange={(e) => setCount(Math.max(2, Number(e.target.value) || 2))}
-                  className={cx(inputCls, 'tnum w-16 text-center')}
-                />
-                <span>veces</span>
+              <div className="mt-3 space-y-3 rounded-card border border-line bg-sunken p-3">
+                {repeatKind === 'weekly' ? (
+                  <div className="flex items-center gap-1.5">
+                    {WEEK_ORDER.map((d) => {
+                      const on = rule.weekdays.includes(d)
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            setWeekdays((prev) => {
+                              const base = prev.length > 0 ? prev : [weekdayOf(date)]
+                              return base.includes(d) ? base.filter((x) => x !== d) : [...base, d]
+                            })
+                          }
+                          className={cx(
+                            'grid size-9 place-items-center rounded-full border text-[13px] font-medium transition-colors duration-150',
+                            on
+                              ? 'border-white bg-white text-black'
+                              : 'border-line text-ink-dim hover:border-line-strong hover:text-ink',
+                          )}
+                        >
+                          {WEEKDAY_LETTER[d]}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
+
+                {repeatKind === 'every' ? (
+                  <div className="flex items-center gap-2 text-[12.5px] text-ink-dim">
+                    <span>cada</span>
+                    <input
+                      type="number"
+                      min={2}
+                      max={60}
+                      value={everyDays}
+                      onChange={(e) => setEveryDays(Math.max(2, Number(e.target.value) || 2))}
+                      className={cx(inputCls, 'tnum w-16 text-center')}
+                    />
+                    <span>días</span>
+                  </div>
+                ) : null}
+
+                {/* Siempre con final: una serie sin fin es justo lo que llena
+                    el calendario de eventos que ya no aplican. */}
+                <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-dim">
+                  <select
+                    value={endKind}
+                    onChange={(e) => setEndKind(e.target.value as RepeatEnd['kind'])}
+                    className={cx(inputCls, 'pr-2')}
+                    aria-label="Cuándo termina"
+                  >
+                    {END_KINDS.map((k) => (
+                      <option key={k.value} value={k.value}>
+                        {k.label}
+                      </option>
+                    ))}
+                  </select>
+                  {endKind === 'weeks' ? (
+                    <>
+                      <input
+                        type="number"
+                        min={1}
+                        max={52}
+                        value={endWeeks}
+                        onChange={(e) => setEndWeeks(Math.max(1, Number(e.target.value) || 1))}
+                        className={cx(inputCls, 'tnum w-16 text-center')}
+                        aria-label="Número de semanas"
+                      />
+                      <span>semanas</span>
+                    </>
+                  ) : endKind === 'count' ? (
+                    <>
+                      <input
+                        type="number"
+                        min={1}
+                        max={MAX_DATES}
+                        value={endCount}
+                        onChange={(e) => setEndCount(Math.max(1, Number(e.target.value) || 1))}
+                        className={cx(inputCls, 'tnum w-16 text-center')}
+                        aria-label="Número de veces"
+                      />
+                      <span>veces</span>
+                    </>
+                  ) : (
+                    <input
+                      type="date"
+                      min={date}
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      className={inputCls}
+                      aria-label="Fecha final"
+                    />
+                  )}
+                </div>
+
+                {/* Vista previa: exactamente las fechas que se van a crear. */}
+                {series ? (
+                  <div className="border-t border-line pt-3">
+                    <p className="text-[12.5px] font-medium text-ink">
+                      {describeRule(rule)} ·{' '}
+                      <span className="tnum">
+                        {series.dates.length} evento{series.dates.length === 1 ? '' : 's'}
+                      </span>
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {series.dates.slice(0, PREVIEW_MAX).map((d) => (
+                        <span
+                          key={d}
+                          className="rounded-full border border-line px-2 py-0.5 text-[11.5px] text-ink-dim capitalize"
+                        >
+                          {formatShortDate(d)}
+                        </span>
+                      ))}
+                      {series.dates.length > PREVIEW_MAX ? (
+                        <span className="px-1 py-0.5 text-[11.5px] text-ink-faint">
+                          +{series.dates.length - PREVIEW_MAX} más
+                        </span>
+                      ) : null}
+                    </div>
+                    {series.truncated ? (
+                      <p className="mt-2 text-[11.5px] text-danger">
+                        Se recortó a {MAX_DATES} eventos, el máximo por serie.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </section>
@@ -309,7 +464,7 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
               placeholder="Notas opcionales que viajan al evento de Calendar…"
-              className="w-full resize-none rounded-lg border border-line bg-sunken px-3 py-2.5 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint outline-none transition-colors focus:border-accent/50 focus:bg-surface"
+              className="w-full resize-none rounded-lg border border-line bg-sunken px-3 py-2.5 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint outline-none transition-colors focus:border-accent/50 focus:bg-black/40"
             />
           </section>
         </div>
@@ -327,7 +482,9 @@ export function Composer({ initialDate, onClose, onCreated }: Props) {
                       : dates.length === 1
                         ? formatShortDate(dates[0])
                         : `${formatShortDate(dates[0])} → ${formatShortDate(dates[dates.length - 1])}`
-                    : formatShortDate(date)}
+                    : series && series.dates.length > 1
+                      ? `${formatShortDate(series.dates[0])} → ${formatShortDate(series.dates[series.dates.length - 1])}`
+                      : formatShortDate(series?.dates[0] ?? date)}
                 </span>
                 <span className="tnum"> · {time}</span>
                 {totalEvents > 1 ? ` · ${totalEvents} eventos` : ''}

@@ -3,6 +3,7 @@ import type { Task } from '../types'
 import { api } from '../lib/api'
 import { courseDotColor } from '../lib/course'
 import { formatFull } from '../lib/date'
+import { XmasEmoji } from './Christmas'
 import { IconClose, IconUndo } from './Icons'
 import { Button, Dot, Spinner } from './ui'
 
@@ -42,7 +43,7 @@ export function HistoryDialog({ onClose, onRestored, onError }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center">
       <div
-        className="anim-fade-in absolute inset-0 bg-black/40 backdrop-blur-[3px]"
+        className="anim-fade-in absolute inset-0 bg-black/60"
         onClick={onClose}
       />
 
@@ -50,11 +51,13 @@ export function HistoryDialog({ onClose, onRestored, onError }: Props) {
         role="dialog"
         aria-modal="true"
         aria-label="Historial de tareas completadas"
-        className="anim-pop relative flex max-h-[88vh] w-full max-w-[560px] flex-col overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
+        className="anim-pop relative flex max-h-[88vh] w-full max-w-[560px] flex-col overflow-hidden glass-strong rounded-panel border border-line shadow-panel"
       >
         <header className="flex items-center justify-between gap-3 border-b border-line px-6 py-4">
           <div>
-            <h2 className="text-[18px] leading-tight font-semibold text-ink">Historial</h2>
+            <h2 className="text-[22px] leading-tight font-semibold tracking-tighter text-ink">
+              Historial <XmasEmoji emoji="🎁" className="text-[18px]" />
+            </h2>
             <p className="mt-0.5 text-[12.5px] text-ink-dim">Tareas y notas completadas</p>
           </div>
           <button
@@ -98,33 +101,29 @@ export function HistoryDialog({ onClose, onRestored, onError }: Props) {
                     {formatFull(task.due_date)}
                   </p>
 
-                  {task.source !== 'classroom' ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="mt-2"
-                      loading={busyId === task.id}
-                      onClick={async () => {
-                        setBusyId(task.id)
-                        try {
-                          await api.setStatus(task.id, 'pending')
-                          await load()
-                          onRestored()
-                        } catch (e) {
-                          onError(e instanceof Error ? e.message : 'No se pudo restaurar')
-                        } finally {
-                          setBusyId(null)
-                        }
-                      }}
-                    >
-                      <IconUndo className="size-3.5" />
-                      Devolver a pendientes
-                    </Button>
-                  ) : (
-                    <p className="mt-2 text-[11.5px] text-ink-faint italic">
-                      Entregada en Classroom
-                    </p>
-                  )}
+                  {/* También las de Classroom: si en verdad están entregadas, la
+                      siguiente sincronización las vuelve a retirar. */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="mt-2"
+                    loading={busyId === task.id}
+                    onClick={async () => {
+                      setBusyId(task.id)
+                      try {
+                        await api.setStatus(task.id, 'pending')
+                        await load()
+                        onRestored()
+                      } catch (e) {
+                        onError(e instanceof Error ? e.message : 'No se pudo restaurar')
+                      } finally {
+                        setBusyId(null)
+                      }
+                    }}
+                  >
+                    <IconUndo className="size-3.5" />
+                    Devolver a pendientes
+                  </Button>
                 </li>
               ))}
             </ul>

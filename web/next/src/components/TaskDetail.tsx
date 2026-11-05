@@ -3,7 +3,9 @@ import type { Task } from '../types'
 import { courseDotColor } from '../lib/course'
 import { formatFull, isOverdue, keyOfIso, timeOfDay } from '../lib/date'
 import { sourceLabel } from '../lib/source'
-import { IconCheck, IconClose, IconLink, IconTrash } from './Icons'
+import { isCalendarSeries, inSeries } from '../lib/series'
+import { XmasEmoji } from './Christmas'
+import { IconCheck, IconClose, IconLink, IconRepeat, IconTrash } from './Icons'
 import { NotesEditor } from './NotesEditor'
 import { Button, cx, Dot, Label } from './ui'
 
@@ -41,6 +43,9 @@ interface Props {
   onNotesSaved: (taskId: string, notes: string) => void
   onComplete: (task: Task) => Promise<void>
   onDelete: (task: Task) => Promise<void>
+  onDeleteSeries: (task: Task) => Promise<void>
+  /** Lugar de la tarea en su serie ("3 de 5"), si pertenece a una. */
+  series: { index: number; total: number } | null
   onReschedule: (task: Task, date: string, time: string) => Promise<void>
 }
 
@@ -55,10 +60,13 @@ export function TaskDetail({
   onNotesSaved,
   onComplete,
   onDelete,
+  onDeleteSeries,
+  series,
   onReschedule,
 }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
+  // null = sin confirmar; 'one' = solo esta; 'series' = toda la serie.
+  const [confirmDelete, setConfirmDelete] = useState<'one' | 'series' | null>(null)
   const [busy, setBusy] = useState<'complete' | 'delete' | 'move' | null>(null)
 
   const [date, setDate] = useState(() => keyOfIso(task.due_date))
@@ -68,7 +76,7 @@ export function TaskDetail({
     setDate(keyOfIso(task.due_date))
     setTime(timeOfDay(task.due_date))
     setExpanded(false)
-    setConfirmDelete(false)
+    setConfirmDelete(null)
   }, [task.id, task.due_date])
 
   useEffect(() => {
@@ -80,6 +88,10 @@ export function TaskDetail({
   }, [onClose])
 
   const overdue = isOverdue(task.due_date)
+  // Las de Classroom no se borran: la siguiente sincronización las recrearía.
+  const deletable = task.source === 'manual' || task.source === 'calendar'
+  const partOfSeries = deletable && inSeries(task)
+  const calendarSeries = partOfSeries && isCalendarSeries(task)
   const moved = date !== keyOfIso(task.due_date) || time !== timeOfDay(task.due_date)
   const longDescription = (task.description ?? '').length > 320
 
@@ -89,7 +101,7 @@ export function TaskDetail({
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center">
       <div
-        className="anim-fade-in absolute inset-0 bg-black/40 backdrop-blur-[3px]"
+        className="anim-fade-in absolute inset-0 bg-black/60"
         onClick={onClose}
       />
 
@@ -97,7 +109,7 @@ export function TaskDetail({
         role="dialog"
         aria-modal="true"
         aria-label={task.title}
-        className="anim-pop relative flex max-h-[88vh] w-full max-w-[600px] flex-col overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
+        className="anim-pop relative flex max-h-[88vh] w-full max-w-[600px] flex-col overflow-hidden glass-strong rounded-panel border border-line shadow-panel"
       >
         <header className="flex items-start justify-between gap-3 border-b border-line px-6 pt-5 pb-4">
           <div className="min-w-0">
@@ -114,9 +126,15 @@ export function TaskDetail({
               <span className="rounded-full bg-sunken px-2 py-0.5 text-[11.5px] text-ink-dim">
                 {sourceLabel(task.source)}
               </span>
+              {partOfSeries ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-sunken px-2 py-0.5 text-[11.5px] text-ink-dim">
+                  <IconRepeat className="size-3" />
+                  {series ? `Serie · ${series.index} de ${series.total}` : 'Serie'}
+                </span>
+              ) : null}
             </div>
             <h2 className="text-[19px] leading-snug font-semibold text-balance text-ink">
-              {task.title}
+              {task.title} <XmasEmoji seed={task.id} className="text-[16px]" />
             </h2>
             <div className="mt-1.5 flex items-center gap-1.5 text-[13px] text-ink-dim">
               <Dot color={courseDotColor(task.course)} />
@@ -226,7 +244,7 @@ export function TaskDetail({
           <Button
             variant="primary"
             size="lg"
-            className="flex-1"
+            className={cx('flex-1', confirmDelete && 'hidden')}
             loading={busy === 'complete'}
             onClick={async () => {
               setBusy('complete')
@@ -241,33 +259,50 @@ export function TaskDetail({
             Completar
           </Button>
 
-          {task.source === 'manual' ? (
+          {deletable ? (
             confirmDelete ? (
-              <div className="flex items-center gap-1.5">
-                <Button
-                  variant="danger"
-                  size="lg"
-                  loading={busy === 'delete'}
-                  onClick={async () => {
-                    setBusy('delete')
-                    try {
-                      await onDelete(task)
-                    } finally {
-                      setBusy(null)
-                    }
-                  }}
-                >
-                  Sí, eliminar
-                </Button>
-                <Button variant="ghost" size="lg" onClick={() => setConfirmDelete(false)}>
-                  No
-                </Button>
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
+                <p className="text-[12.5px] leading-snug text-ink-dim">
+                  {confirmDelete === 'one'
+                    ? 'Se borra esta tarjeta y su evento de Google Calendar.'
+                    : calendarSeries
+                      ? 'Se borra la serie completa de Google Calendar, también las fechas pasadas. No se puede deshacer.'
+                      : 'Se borran todas las fechas pendientes de esta serie y sus eventos de Calendar.'}
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="danger"
+                    size="lg"
+                    loading={busy === 'delete'}
+                    onClick={async () => {
+                      setBusy('delete')
+                      try {
+                        await (confirmDelete === 'series' ? onDeleteSeries(task) : onDelete(task))
+                      } finally {
+                        setBusy(null)
+                      }
+                    }}
+                  >
+                    {confirmDelete === 'series' ? 'Sí, borrar la serie' : 'Sí, eliminar'}
+                  </Button>
+                  <Button variant="ghost" size="lg" onClick={() => setConfirmDelete(null)}>
+                    No
+                  </Button>
+                </div>
               </div>
             ) : (
-              <Button variant="ghost" size="lg" onClick={() => setConfirmDelete(true)}>
-                <IconTrash className="size-[18px]" />
-                Eliminar
-              </Button>
+              <>
+                <Button variant="ghost" size="lg" onClick={() => setConfirmDelete('one')}>
+                  <IconTrash className="size-[18px]" />
+                  {partOfSeries ? 'Solo esta' : 'Eliminar'}
+                </Button>
+                {partOfSeries ? (
+                  <Button variant="danger" size="lg" onClick={() => setConfirmDelete('series')}>
+                    <IconRepeat className="size-[18px]" />
+                    Toda la serie
+                  </Button>
+                ) : null}
+              </>
             )
           ) : null}
         </footer>

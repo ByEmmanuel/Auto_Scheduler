@@ -18,18 +18,18 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(__file__))
-from modules import sync_pipeline
+from modules import classroom_api, sync_pipeline
 
 
 def _print_summary(summary: dict):
     print(f"\n① Calendar → local: {summary['calendar_checked']} eventos verificados, "
           f"{summary['calendar_scanned']} revisados en el calendario.")
     if summary['calendar_healed']:
-        print(f"   🔧 {len(summary['calendar_healed'])} evento(s) borrados a mano en Calendar, marcados para re-crear:")
+        print(f"   🔧 {len(summary['calendar_healed'])} evento(s) de Classroom borrados a mano, se vuelven a crear:")
         for rec in summary['calendar_healed']:
             print(f"      · {rec['title']}")
     if summary['calendar_removed']:
-        print(f"   🗑️  {len(summary['calendar_removed'])} nota(s) borradas desde Calendar, retiradas del tablero:")
+        print(f"   🗑️  {len(summary['calendar_removed'])} nota(s) o tarea(s) borradas desde Calendar, retiradas del tablero:")
         for rec in summary['calendar_removed']:
             print(f"      · {rec['title']}")
     if summary['calendar_imported']:
@@ -46,11 +46,23 @@ def _print_summary(summary: dict):
         for rec in summary['completed']:
             print(f"      🗑️  Removiendo: {rec['title']}")
 
-    if summary['skipped']:
-        print(f"\n   ⏭️  Omitidas ({len(summary['skipped'])} tareas):")
-        for task, reason in summary['skipped']:
-            label = 'Sin fecha' if reason == 'sin_fecha' else 'Ya venció'
-            print(f"      · [{label}] {task.get('course_name', '')} – {task['title']}")
+    if summary['reopened']:
+        print(f"\n   ↩️  {len(summary['reopened'])} tarea(s) reabiertas, siguen pendientes en Classroom:")
+        for task in summary['reopened']:
+            print(f"      · {task.get('course_name', '')} – {task['title']}")
+
+    if summary['rescheduled']:
+        print(f"\n   📅 {len(summary['rescheduled'])} tarea(s) con fecha nueva en Classroom:")
+        for task in summary['rescheduled']:
+            print(f"      · {task.get('course_name', '')} – {task['title']}")
+
+    if summary['board_only']:
+        print(f"\n   📋 Solo en el tablero, sin evento ({len(summary['board_only'])} tareas vencidas o sin fecha):")
+        for task in summary['board_only']:
+            print(f"      · {task.get('course_name', '')} – {task['title']}")
+
+    if summary['failed_courses']:
+        print(f"\n   ⚠️  Cursos que no se pudieron leer: {', '.join(summary['failed_courses'])}")
 
     print(f"\n   ✔️  Ya sincronizadas, sin cambios: {summary['already_synced']}")
 
@@ -72,7 +84,11 @@ def main():
     print("        🗓️  AUTO SCHEDULER  –  Iniciando…")
     print("=" * 55)
 
-    summary = sync_pipeline.run_full_sync()
+    try:
+        summary = sync_pipeline.run_full_sync()
+    except classroom_api.ClassroomUnavailable as e:
+        print(f"\n❌ Google Classroom no respondió, no se cambió ninguna tarea de Classroom: {e}")
+        return
     _print_summary(summary)
 
     print("=" * 55)

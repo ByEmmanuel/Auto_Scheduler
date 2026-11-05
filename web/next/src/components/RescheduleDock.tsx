@@ -17,9 +17,9 @@ function DockTarget({ label, dateKey }: { label: string; dateKey: string }) {
     <div
       ref={setNodeRef}
       className={cx(
-        'flex min-w-[104px] flex-col items-center gap-0.5 rounded-xl border px-4 py-2.5 transition-all duration-150',
+        'flex min-w-[104px] flex-col items-center gap-0.5 rounded-full border px-5 py-2.5 transition-all duration-150',
         isOver
-          ? 'border-accent/60 bg-accent-soft text-accent-ink scale-105'
+          ? 'border-white bg-white text-black scale-105 shadow-[0_0_28px_rgba(127,180,255,0.55)]'
           : 'border-line bg-raised text-ink-dim',
       )}
     >
@@ -36,8 +36,8 @@ export function RescheduleDock({ visible }: { visible: boolean }) {
 
   return (
     <div className="anim-pop pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center">
-      <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-line bg-surface/85 p-2 shadow-panel backdrop-blur-xl">
-        <span className="px-2 text-[11px] tracking-[0.08em] text-ink-faint uppercase">
+      <div className="pointer-events-auto flex items-center gap-2 glass-strong rounded-full border border-line p-2 shadow-panel">
+        <span className="pl-3 pr-1 text-[11px] tracking-[0.08em] text-ink-faint uppercase">
           Mover a
         </span>
         <DockTarget label="Hoy" dateKey={today} />

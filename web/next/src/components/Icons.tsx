@@ -132,6 +132,13 @@ export const IconSun = (p: IconProps) => (
   </Svg>
 )
 
+export const IconSnow = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9" />
+    <path d="m9.5 4.5 2.5 2 2.5-2M9.5 19.5l2.5-2 2.5 2" />
+  </Svg>
+)
+
 export const IconMoon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" />
@@ -168,5 +175,27 @@ export const IconChevronLeft = (p: IconProps) => (
 export const IconChevronRight = (p: IconProps) => (
   <Svg {...p}>
     <path d="M9 5l7 7-7 7" />
+  </Svg>
+)
+
+export const IconBoard = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="5" height="16" rx="1.5" />
+    <rect x="10" y="4" width="5" height="11" rx="1.5" />
+    <rect x="17" y="4" width="4" height="7" rx="1.5" />
+  </Svg>
+)
+
+export const IconArchive = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="4" rx="1" />
+    <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
+    <path d="M10 12h4" />
+  </Svg>
+)
+
+export const IconChevronDown = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m6 9 6 6 6-6" />
   </Svg>
 )

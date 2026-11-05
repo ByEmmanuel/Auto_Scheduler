@@ -14,7 +14,10 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-white hover:opacity-90 disabled:opacity-45',
+  // Blanco sobre negro, como los botones del estilo light ripple: con el acento
+  // azul claro, un texto blanco encima no tendría contraste.
+  primary:
+    'bg-white text-black hover:bg-white/85 hover:shadow-[0_0_24px_rgba(127,180,255,0.45)] disabled:opacity-45',
   ghost:
     'text-ink-dim hover:text-ink hover:bg-sunken border border-transparent hover:border-line disabled:opacity-45',
   subtle: 'bg-sunken text-ink border border-line hover:border-line-strong disabled:opacity-45',
@@ -25,9 +28,9 @@ const VARIANTS: Record<ButtonVariant, string> = {
 // utilidades de alto en el mismo elemento (h-9 y h-10) no se resuelven por
 // orden de escritura, así que el ganador sería impredecible.
 const SIZES: Record<ButtonSize, string> = {
-  sm: 'h-7 gap-1 px-2 text-[12px]',
+  sm: 'h-7 gap-1 px-2.5 text-[12px]',
   md: 'h-9 gap-1.5 px-3 text-[13px]',
-  lg: 'h-10 gap-2 px-4 text-[13.5px]',
+  lg: 'h-10 gap-2 px-5 text-[13.5px]',
   icon: 'size-10 gap-0 p-0 text-[13px]',
 }
 
@@ -45,8 +48,8 @@ export function Button({
       {...rest}
       disabled={disabled || loading}
       className={cx(
-        'inline-flex items-center justify-center rounded-lg font-medium',
-        'transition-[background-color,color,opacity,border-color] duration-150 disabled:cursor-not-allowed',
+        'inline-flex items-center justify-center rounded-full font-medium',
+        'transition-[background-color,color,opacity,border-color,box-shadow] duration-150 disabled:cursor-not-allowed',
         SIZES[size],
         VARIANTS[variant],
         className,
@@ -83,7 +86,7 @@ export function Chip({
       className={cx(
         'h-8 rounded-full border px-3 text-[12.5px] font-medium transition-all duration-150',
         active
-          ? 'border-accent/40 bg-accent-soft text-accent-ink'
+          ? 'border-white bg-white text-black'
           : 'border-line text-ink-dim hover:border-line-strong hover:text-ink',
         className,
       )}

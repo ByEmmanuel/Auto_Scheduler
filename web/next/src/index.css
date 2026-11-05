@@ -1,14 +1,16 @@
 @import 'tailwindcss';
 
-/* Modo oscuro por clase en <html>, no por preferencia del sistema: el usuario
-   puede alternarlo desde la barra superior y la elección se persiste. */
+/* Se conserva la variante `dark:` por compatibilidad, pero la app ya solo
+   tiene tema oscuro: el fondo es el shader "light ripple", que siempre es
+   negro, y el texto blanco es el que se lee bien sobre él. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ── Tokens semánticos ────────────────────────────────────────────────────
-   Un solo acento, superficies casi monocromas y bordes de bajísimo contraste.
-   Los valores viven en :root / .dark y aquí solo se exponen como utilidades
-   (bg-surface, text-ink-dim, border-line, …) para que el tema cambie sin
-   duplicar clases en los componentes.                                      */
+   Estilo "light ripple": negro puro detrás (el shader), texto blanco y
+   superficies de vidrio oscuro translúcido para que los arcos de luz se vean
+   a través. Un solo acento, el azul del espectro del shader. Los valores
+   viven en :root y aquí se exponen como utilidades (bg-surface, text-ink-dim,
+   border-line, …).                                                         */
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 
@@ -27,49 +29,44 @@
   --color-danger: var(--c-danger);
   --color-danger-soft: var(--c-danger-soft);
   --color-ok: var(--c-ok);
+  --color-note: var(--c-note);
 
   --radius-card: 0.875rem;
   --radius-panel: 1.25rem;
 }
 
 :root {
-  --c-canvas: #f8f8f9;
-  --c-surface: #ffffff;
-  --c-raised: #ffffff;
-  --c-sunken: #f1f1f3;
-  --c-line: rgba(9, 9, 11, 0.08);
-  --c-line-strong: rgba(9, 9, 11, 0.16);
-  --c-ink: #18181b;
-  --c-ink-dim: #52525b;
-  --c-ink-faint: #a1a1aa;
-  --c-accent: #2563eb;
-  --c-accent-ink: #1d4ed8;
-  --c-accent-soft: rgba(37, 99, 235, 0.1);
-  --c-danger: #dc2626;
-  --c-danger-soft: rgba(220, 38, 38, 0.09);
-  --c-ok: #059669;
-  --shadow-panel: 0 1px 2px rgba(9, 9, 11, 0.04), 0 12px 32px rgba(9, 9, 11, 0.1);
-  --shadow-drag: 0 12px 28px rgba(9, 9, 11, 0.18);
-}
+  color-scheme: dark;
 
-.dark {
-  --c-canvas: #08080a;
-  --c-surface: #0e0e10;
-  --c-raised: #151518;
-  --c-sunken: #131316;
-  --c-line: rgba(255, 255, 255, 0.07);
-  --c-line-strong: rgba(255, 255, 255, 0.15);
-  --c-ink: #f4f4f5;
-  --c-ink-dim: #a1a1aa;
-  --c-ink-faint: #6b6b73;
-  --c-accent: #5a86f5;
-  --c-accent-ink: #9dbaff;
-  --c-accent-soft: rgba(90, 134, 245, 0.14);
-  --c-danger: #f87171;
-  --c-danger-soft: rgba(248, 113, 113, 0.12);
-  --c-ok: #34d399;
-  --shadow-panel: 0 16px 48px rgba(0, 0, 0, 0.6);
-  --shadow-drag: 0 16px 36px rgba(0, 0, 0, 0.55);
+  /* El lienzo es transparente: lo que se ve detrás es el shader. */
+  --c-canvas: transparent;
+  --c-surface: rgba(8, 8, 10, 0.5);
+  --c-raised: rgba(18, 18, 22, 0.72);
+  --c-sunken: rgba(255, 255, 255, 0.055);
+  --c-line: rgba(255, 255, 255, 0.1);
+  --c-line-strong: rgba(255, 255, 255, 0.24);
+  --c-ink: #ffffff;
+  --c-ink-dim: rgba(255, 255, 255, 0.72);
+  --c-ink-faint: rgba(255, 255, 255, 0.46);
+  --c-accent: #7fb4ff;
+  --c-accent-ink: #bcd6ff;
+  --c-accent-soft: rgba(127, 180, 255, 0.16);
+  --c-danger: #ff7b7b;
+  --c-danger-soft: rgba(255, 123, 123, 0.14);
+  --c-ok: #5fe3ab;
+  /* Ámbar del shader, solo como marca de las notas (en Calendar van en
+     amarillo): distingue una nota de una tarea sin ser un segundo acento. */
+  --c-note: #ffd27a;
+
+  /* Vidrio: superficies grandes (barra, columnas, diálogos) difuminan el
+     shader que tienen detrás. Las tarjetas no llevan blur propio: cientos de
+     backdrop-filter sobre un lienzo animado se recalcularían en cada cuadro. */
+  --c-glass: rgba(6, 6, 8, 0.5);
+  --c-glass-strong: rgba(6, 6, 8, 0.78);
+  --glass-blur: blur(18px) saturate(140%);
+
+  --shadow-panel: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 24px 64px rgba(0, 0, 0, 0.7);
+  --shadow-drag: 0 18px 40px rgba(0, 0, 0, 0.7);
 }
 
 @layer base {
@@ -78,7 +75,7 @@
   }
 
   body {
-    background-color: var(--c-canvas);
+    background-color: #000;
     color: var(--c-ink);
     font-family: var(--font-sans);
     font-feature-settings: 'cv05', 'cv11', 'ss01';
@@ -135,6 +132,18 @@
     box-shadow: var(--shadow-drag);
   }
 
+  .glass {
+    background-color: var(--c-glass);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+
+  .glass-strong {
+    background-color: var(--c-glass-strong);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+
   .tnum {
     font-variant-numeric: tabular-nums;
   }
@@ -183,6 +192,15 @@
   }
 }
 
+@keyframes as-countdown {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
 @keyframes as-spin {
   to {
     transform: rotate(360deg);
@@ -217,6 +235,136 @@
 
 .anim-pulse {
   animation: as-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Etapa navideña ──────────────────────────────────────────────────────────
+   Solo con la clase `xmas` en <html>; ver lib/season.ts. La guirnalda cuelga
+   de la barra y nada de esto recibe clics.                                  */
+@keyframes as-twinkle {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Cable: un arco de 44 px que se repite; cada foco va en su punto más bajo. */
+.as-garland {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='12'%3E%3Cpath d='M0 0Q22 20 44 0' fill='none' stroke='%23fff' stroke-opacity='.28'/%3E%3C/svg%3E")
+    repeat-x;
+}
+
+.as-bulb-dot {
+  animation: as-twinkle 4s ease-in-out infinite;
+}
+
+.as-bulb {
+  position: absolute;
+  top: 9px;
+  width: 6px;
+  height: 9px;
+  margin-left: -3px;
+  border-radius: 50% 50% 50% 50% / 40% 40% 62% 62%;
+  background: var(--bulb);
+  box-shadow: 0 0 9px 1px var(--bulb);
+  animation: as-twinkle 4s ease-in-out infinite;
+}
+
+.as-xmas-emoji {
+  display: none;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.xmas .as-xmas-emoji {
+  display: inline-block;
+}
+
+.as-snowdrift {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 12' preserveAspectRatio='none'%3E%3Cpath d='M0 12V7Q30 1 70 5 110 9 150 4 200 0 240 6 290 11 330 5 345 4 360 7V12Z' fill='%23fff' fill-opacity='.8'/%3E%3C/svg%3E")
+    bottom / 360px 100% repeat-x;
+}
+
+/* El trineo cruza en arco y desaparece: si la animación se corta (movimiento
+   reducido), el estado final es invisible. */
+@keyframes as-sleigh-fly {
+  0% {
+    opacity: 0;
+    transform: translate(-320px, 34px) rotate(-3deg);
+  }
+  8% {
+    opacity: 1;
+  }
+  50% {
+    transform: translate(45vw, -8px) rotate(1deg);
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(100vw, 30px) rotate(4deg);
+  }
+}
+
+.as-sleigh {
+  animation: as-sleigh-fly 9s ease-in-out both;
+}
+
+/* La estrella del árbol solo brilla cuando no queda nada atrasado. */
+@keyframes as-star-glow {
+  50% {
+    filter: drop-shadow(0 0 18px #ffd166) brightness(1.2);
+  }
+}
+
+.as-star-lit {
+  filter: drop-shadow(0 0 9px #ffd166);
+  animation: as-star-glow 2.6s ease-in-out infinite;
+}
+
+.as-ornament {
+  transition: r 0.12s ease-out;
+}
+
+.as-ornament:hover {
+  r: 9px;
+}
+
+/* Bastón de caramelo bajo el encabezado de hoy. */
+.xmas .as-today > header {
+  position: relative;
+}
+
+.xmas .as-today > header::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 99px;
+  background: repeating-linear-gradient(-45deg, #e5383b 0 6px, #fff 6px 12px);
+}
+
+/* Nieve acumulada sobre cada columna; las pares van al espejo para que no se
+   note que es el mismo dibujo. */
+.xmas .as-column {
+  position: relative;
+}
+
+.xmas .as-column::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 7px;
+  right: 7px;
+  height: 14px;
+  pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 270 14' preserveAspectRatio='none'%3E%3Cpath d='M0 12Q4 3 16 4 40 0 70 3 86 9 110 6 150-1 190 3 215 9 240 4 262 1 270 12 250 9 230 12 205 15 185 10 150 8 120 11 90 14 70 9 40 7 20 11 8 13 0 12Z' fill='%23fff' fill-opacity='.88'/%3E%3C/svg%3E")
+    center / 100% 100% no-repeat;
+}
+
+.xmas .as-column:nth-child(even)::before {
+  transform: scaleX(-1);
 }
 
 @media (prefers-reduced-motion: reduce) {

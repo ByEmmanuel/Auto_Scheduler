@@ -1,4 +1,4 @@
-import type { BoardData, CalendarSyncSummary, ManualTaskPayload, SyncSummary, Task } from '../types'
+import type { BoardData, ManualTaskPayload, Note, NotePayload, SyncSummary, Task } from '../types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -48,21 +48,58 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
 
+  /** Completa (o devuelve a pendientes) varias tareas; responde una por una. */
+  bulkStatus: (ids: string[], status: 'pending' | 'completed') =>
+    request<{ results: { id: string; ok: boolean; error?: string }[] }>('/api/tasks/bulk_status', {
+      method: 'POST',
+      body: JSON.stringify({ ids, status }),
+    }),
+
   remove: (id: string) =>
     request<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  /** Borra la serie completa (repetida) a la que pertenece la tarea. */
+  removeSeries: (id: string) =>
+    request<{ deleted: string[] }>(`/api/tasks/${encodeURIComponent(id)}/series`, {
+      method: 'DELETE',
+    }),
+
   createManual: (payload: ManualTaskPayload) =>
-    request<{ created: string[] }>('/api/manual_task', {
+    request<{ created: string[]; calendar_failed: number }>('/api/manual_task', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  verify: () => request<SyncSummary>('/api/verify', { method: 'POST' }),
+  notes: () => request<{ notes: Note[]; archived: Note[] }>('/api/notes'),
 
-  /**
-   * Solo Calendar → local. El tablero la llama al abrirse para traer las notas
-   * que el usuario escribió desde el celular; no consulta Classroom, que es la
-   * parte lenta y vive en el botón de sincronizar.
-   */
-  syncCalendar: () => request<CalendarSyncSummary>('/api/sync/calendar', { method: 'POST' }),
+  createNote: (payload: NotePayload) =>
+    request<{ note: Note; calendar_synced: boolean }>('/api/notes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateNote: (id: string, payload: Partial<NotePayload>) =>
+    request<{ note: Note; calendar_synced: boolean }>(`/api/notes/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  archiveNote: (id: string) =>
+    request<{ note: Note; calendar_synced: boolean }>(
+      `/api/notes/${encodeURIComponent(id)}/archive`,
+      { method: 'POST' },
+    ),
+
+  restoreNote: (id: string) =>
+    request<{ note: Note; calendar_synced: boolean }>(
+      `/api/notes/${encodeURIComponent(id)}/restore`,
+      { method: 'POST' },
+    ),
+
+  deleteNote: (id: string) =>
+    request<{ success: boolean }>(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** Sincroniza Calendar y después Classroom. Lo llama el botón, y el tablero
+   *  solo al abrirse y al volver a la pestaña. */
+  verify: () => request<SyncSummary>('/api/verify', { method: 'POST' }),
 }

@@ -59,7 +59,7 @@ export function MultiDatePicker({ selected, onChange, max = 60 }: Props) {
           type="button"
           aria-label="Mes anterior"
           onClick={() => setCursor(shiftMonth(year, month, -1))}
-          className="rounded-md p-1.5 text-ink-faint transition-colors hover:bg-surface hover:text-ink"
+          className="rounded-md p-1.5 text-ink-faint transition-colors hover:bg-white/10 hover:text-ink"
         >
           <IconChevronLeft className="size-4" />
         </button>
@@ -70,7 +70,7 @@ export function MultiDatePicker({ selected, onChange, max = 60 }: Props) {
           type="button"
           aria-label="Mes siguiente"
           onClick={() => setCursor(shiftMonth(year, month, 1))}
-          className="rounded-md p-1.5 text-ink-faint transition-colors hover:bg-surface hover:text-ink"
+          className="rounded-md p-1.5 text-ink-faint transition-colors hover:bg-white/10 hover:text-ink"
         >
           <IconChevronRight className="size-4" />
         </button>
@@ -102,9 +102,9 @@ export function MultiDatePicker({ selected, onChange, max = 60 }: Props) {
                 'tnum flex h-8 items-center justify-center rounded-md text-[12.5px]',
                 'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-30',
                 isChosen
-                  ? 'bg-accent font-medium text-white'
+                  ? 'bg-white font-medium text-black'
                   : cx(
-                      'hover:bg-surface',
+                      'hover:bg-white/10',
                       isToday && 'font-medium text-accent',
                       !isToday && (past ? 'text-ink-faint' : 'text-ink-dim'),
                     ),

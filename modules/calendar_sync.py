@@ -1,6 +1,8 @@
 import os
+import re
 import sys
 import datetime
+import threading
 import zoneinfo
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -26,16 +28,16 @@ NOTES_MARKER = '✏️ Mis notas:'
 def local_tz() -> zoneinfo.ZoneInfo:
     return zoneinfo.ZoneInfo(LOCAL_TZ)
 
-_calendar_service = None
+_local = threading.local()
 
 
 def get_calendar_service():
-    """Instancia única del servicio (singleton para no autenticar en cada llamada)."""
-    global _calendar_service
-    if _calendar_service is None:
+    """Un servicio por hilo: su cliente HTTP no se puede compartir, y guardar
+    una nota mientras corre una sincronización lo usaría desde dos hilos."""
+    if not hasattr(_local, 'service'):
         creds = auth.get_credentials()
-        _calendar_service = build('calendar', 'v3', credentials=creds)
-    return _calendar_service
+        _local.service = build('calendar', 'v3', credentials=creds)
+    return _local.service
 
 
 def _build_reminders(is_urgent: bool, custom_reminder_minutes=None) -> list:
@@ -185,12 +187,33 @@ def event_exists(event_id: str) -> bool:
         return True
 
 
+def get_event(event_id: str) -> dict | None:
+    """Lee un evento (o una instancia de una serie) de Google Calendar.
+
+    Devuelve None si no existe o no se pudo leer. Se usa, por ejemplo, para
+    saber a qué serie pertenece una instancia (`recurringEventId`) antes de
+    borrar la serie entera: eso nunca se deduce del formato del id.
+    """
+    service = get_calendar_service()
+    try:
+        return service.events().get(calendarId='primary', eventId=event_id).execute()
+    except Exception as e:
+        print(f"  ⚠️  No se pudo leer el evento {event_id}: {e}")
+        return None
+
+
 def delete_calendar_event(event_id: str) -> bool:
-    """Borra un evento de Google Calendar por su ID."""
+    """Borra un evento de Google Calendar. True si ya no está, aunque ya
+    hubiera desaparecido antes de esta llamada."""
     service = get_calendar_service()
     try:
         service.events().delete(calendarId='primary', eventId=event_id).execute()
         return True
+    except HttpError as e:
+        if e.resp.status in (404, 410):
+            return True
+        print(f"  ⚠️  No se pudo borrar evento {event_id}: {e}")
+        return False
     except Exception as e:
         print(f"  ⚠️  No se pudo borrar evento {event_id}: {e}")
         return False
@@ -343,6 +366,15 @@ def list_primary_events(time_min: datetime.datetime,
     return events[:max_results]
 
 
+def event_deadline(event: dict) -> str | None:
+    """Vencimiento que marca un evento creado por la app (termina ahí), como
+    ISO local sin zona; None si es de día completo."""
+    end = (event.get('end') or {}).get('dateTime')
+    if not end:
+        return None
+    return date_parser.isoparse(end).astimezone(local_tz()).replace(tzinfo=None).isoformat()
+
+
 def is_app_event(event: dict) -> bool:
     """True si el evento lo creó esta app (lleva su marca privada)."""
     private = (event.get('extendedProperties') or {}).get('private') or {}
@@ -399,3 +431,124 @@ def event_to_task(event: dict) -> dict | None:
         'calendar_event_id': event['id'],
         'all_day': bool(start.get('date')),
     }
+
+
+# ── Notas (eventos de día completo, sin alertas) ───────────────────────────────
+#
+# Calendar no tiene "notas": todo lo que se guarda ahí es un evento. Para que
+# una nota no parezca una entrega se guarda como el evento más discreto que
+# hay: de día completo (una franja arriba del día, no un bloque de horas),
+# marcado como "disponible" para no ocupar la agenda, sin alertas y en amarillo.
+# Google Tasks quedaría peor: Calendar las pinta como pendientes con casilla.
+
+NOTE_TAG_VALUE = 'note'
+NOTE_ID_KEY = 'autoSchedulerNoteId'
+NOTE_PREFIX = '📝'
+NOTE_COLOR_ID = '5'   # Banana (amarillo)
+
+# Lo que se escribe desde el celular para que algo sea nota y no tarea:
+# «📝 comprar cartulina» o «Nota: comprar cartulina».
+_PHONE_NOTE_RE = re.compile(r'^\s*(?:📝|nota\s*:)\s*', re.IGNORECASE)
+
+
+def is_note_event(event: dict) -> bool:
+    """True si el evento es una nota de esta app (lleva su marca privada)."""
+    private = (event.get('extendedProperties') or {}).get('private') or {}
+    return private.get(APP_TAG_KEY) == NOTE_TAG_VALUE
+
+
+def looks_like_phone_note(event: dict) -> bool:
+    """True si el título dice que es una nota («📝 …» o «Nota: …»)."""
+    return bool(_PHONE_NOTE_RE.match(event.get('summary') or ''))
+
+
+def note_id_of(event: dict) -> str:
+    private = (event.get('extendedProperties') or {}).get('private') or {}
+    return private.get(NOTE_ID_KEY, '')
+
+
+def _note_fields(note: dict) -> dict:
+    day = datetime.date.fromisoformat(note['date'])
+    return {
+        'summary': f"{NOTE_PREFIX} {note['title']}",
+        'description': note.get('body') or '',
+        'start': {'date': day.isoformat()},
+        'end': {'date': (day + datetime.timedelta(days=1)).isoformat()},
+        'transparency': 'transparent',
+        'colorId': NOTE_COLOR_ID,
+        'reminders': {'useDefault': False, 'overrides': []},
+        'extendedProperties': {
+            'private': {APP_TAG_KEY: NOTE_TAG_VALUE, NOTE_ID_KEY: note['id']},
+        },
+    }
+
+
+def add_note_event(note: dict) -> dict | None:
+    """Crea el evento de una nota. Devuelve el evento creado (para guardar su
+    `id` y `updated`) o None si Calendar falló."""
+    try:
+        return get_calendar_service().events().insert(
+            calendarId='primary', body=_note_fields(note)).execute()
+    except Exception as e:
+        print(f"  ❌ Error al crear la nota '{note.get('title')}' en Calendar: {e}")
+        return None
+
+
+def update_note_event(event_id: str, note: dict) -> dict | None:
+    """Reescribe el evento de una nota con lo que dice el dashboard. Devuelve
+    el evento actualizado o None si Calendar falló (o ya no existe)."""
+    try:
+        return get_calendar_service().events().patch(
+            calendarId='primary', eventId=event_id, body=_note_fields(note)).execute()
+    except Exception as e:
+        print(f"  ❌ Error actualizando la nota {event_id} en Calendar: {e}")
+        return None
+
+
+def list_note_events() -> list[dict] | None:
+    """Todos los eventos-nota de la app, de cualquier fecha, en una sola
+    consulta por su marca privada. None si Calendar no respondió: un listado
+    fallido no debe leerse como "se borraron todas"."""
+    service = get_calendar_service()
+    events, page_token = [], None
+    try:
+        while True:
+            resp = service.events().list(
+                calendarId='primary',
+                privateExtendedProperty=f'{APP_TAG_KEY}={NOTE_TAG_VALUE}',
+                maxResults=250,
+                pageToken=page_token,
+            ).execute()
+            events.extend(resp.get('items', []))
+            page_token = resp.get('nextPageToken')
+            if not page_token:
+                return events
+    except Exception as e:
+        print(f"  ⚠️  No se pudieron listar las notas de Calendar: {e}")
+        return None
+
+
+def note_from_event(event: dict) -> dict:
+    """Título, texto y día de una nota según su evento. Si en Calendar la
+    pasaron a una hora concreta, cuenta el día en que empieza."""
+    start = event.get('start') or {}
+    if start.get('date'):
+        day = start['date']
+    elif start.get('dateTime'):
+        day = date_parser.isoparse(start['dateTime']).astimezone(local_tz()).date().isoformat()
+    else:
+        day = datetime.date.today().isoformat()
+    title = _PHONE_NOTE_RE.sub('', event.get('summary') or '').strip() or 'Nota sin título'
+    return {
+        'title': title,
+        'body': _strip_dashboard_notes((event.get('description') or '').strip()),
+        'date': day,
+    }
+
+
+def adopt_phone_note(event: dict, note_id: str) -> dict | None:
+    """Convierte en nota un evento escrito a mano en Calendar («📝 …»): le pone
+    la marca privada y el formato de nota (día completo, sin alertas). Devuelve
+    el evento actualizado o None si Calendar no lo dejó cambiar."""
+    note = {'id': note_id, **note_from_event(event)}
+    return update_note_event(event['id'], note)

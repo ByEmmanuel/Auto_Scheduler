@@ -44,6 +44,37 @@ antes de borrar cualquier evento devuelto por la búsqueda.
 
 ---
 
+## Corregidos en la revisión de sincronización (2026-11-01)
+
+### 🔴 Tareas de Classroom marcadas como completadas sin estar entregadas
+`fetch_pending_tasks` devolvía `[]` si fallaba la lista de cursos y saltaba en
+silencio los cursos o entregas con error. Como "no vino en la lista" se leía
+como "ya se entregó", un fallo de la API cerraba tareas y borraba sus eventos.
+Además, nada las reabría. Cuatro tareas reales estaban así.
+**Fix:** solo se retira lo de cursos que Classroom respondió completos, y lo
+que el pipeline cerró de más se reabre. `completed_by` distingue eso de lo que
+cerró el usuario, que se respeta.
+
+### 🔴 Las atrasadas no reflejaban lo entregado
+Classroom solo se consultaba con el botón. **Fix:** las entregas se piden por
+curso (`courseWorkId='-'`), lo que baja de ~110 consultas a 17, y el pipeline
+completo corre al abrir el tablero y al volver a la pestaña.
+
+### 🟡 Otros
+- Sin paginación en Classroom: ya se recorren todas las páginas.
+- Fechas cambiadas por el profesor: `classroom_due` guarda la última vista allá
+  para no confundirlas con los movimientos del usuario.
+- Vencimiento comparado como UTC: las tareas de la noche se daban por vencidas.
+- Tareas vencidas o sin fecha nunca entraban al tablero; ahora entran sin evento.
+- Si Calendar fallaba al crear el evento, la tarea nueva no aparecía.
+- Eventos de tareas cerradas que quedaban vivos: `_sweep_completed_events`.
+- Mover o borrar en Calendar un evento de la app no se reflejaba en el tablero.
+- `get_calendar_service` compartía un cliente HTTP entre hilos.
+- `/api/verify` respondía 500 en HTML y 409 si se pulsaba durante el arranque.
+- "Sincronización completa" aunque hubiera fallos.
+
+---
+
 ## Documentados, sin corregir (requieren decisión de producto o son de bajo impacto)
 
 ### 🔴 Seguridad: el dashboard no tiene autenticación
@@ -56,23 +87,6 @@ usuario sin iniciar sesión. Si el dashboard es solo para uso local en tu
 propia máquina esto es aceptable; si se piensa exponer en red o dejar
 corriendo en un servidor, necesita autenticación (aunque sea básica) o
 bindear a `127.0.0.1`.
-
-### 🟡 `modules/classroom_api.py` — sin paginación
-`courses().list()`, `courseWork().list()` y `studentSubmissions().list()` no
-manejan `nextPageToken`. Si el usuario tiene más cursos/tareas que el tamaño
-de página por defecto de la API, las tareas de más allá de esa página se
-pierden silenciosamente (no aparecen ni se sincronizan, tampoco se listan
-como error). Bajo riesgo con pocos cursos, pero es una limitación real de
-escala.
-
-### 🟡 Cambios de fecha en Classroom no se reflejan en Calendar
-Si un profesor cambia la fecha de entrega de una tarea ya sincronizada, el
-pipeline (pasos 2-3) la trata como "ya sincronizada" (tiene
-`calendar_event_id` vivo) y no actualiza ni el registro local ni el evento
-de Calendar con la nueva fecha. El evento en Calendar queda con la fecha
-vieja hasta que la tarea se entregue/borre y se vuelva a crear. Esto ya
-existía antes de esta sesión; no es nuevo, pero es relevante para el
-objetivo de "sincronización correcta".
 
 ### 🟡 `modules/calendar_sync.py` — `update_calendar_event_notes` puede fallar si el evento fue editado a mano
 La función busca la substring exacta `separator + marker` para reemplazar
@@ -101,6 +115,10 @@ frente al modal manual de la web.
 Si el usuario pasa explícitamente una fecha a medianoche, el script asume
 que "no puso hora" y la cambia a las 23:59. Ambigüedad menor, de baja
 frecuencia de uso.
+
+### 🟢 El título de Classroom no actualiza el evento de Calendar
+Si el profesor renombra una tarea, el tablero se actualiza pero el evento
+conserva el título con el que se creó.
 
 ### 🟢 Columnas de BD sin usar / feature incompleta
 `synced_tasks.attachments` existe en el esquema (`db.py`) pero nunca se lee

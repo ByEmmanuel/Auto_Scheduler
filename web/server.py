@@ -6,10 +6,15 @@ Endpoints:
   GET  /next          → Redirige a / (dirección antigua del dashboard React)
   GET  /clasico       → Sirve el dashboard anterior (static/index.html)
   GET  /api/tasks     → Devuelve las tareas sincronizadas agrupadas por fecha
-  POST /api/sync/calendar → Solo Calendar → local (importa notas del celular)
-  POST /api/verify    → Ejecuta extracción de Classroom + sincronización con Calendar
+  POST /api/sync/calendar → Solo Calendar → local (dashboard clásico)
+  POST /api/verify    → Sincroniza Calendar y después Classroom (pipeline completo)
   PUT  /api/tasks/<source_id>/notes    → Actualiza notas de una tarea y sincroniza con Calendar
   PUT  /api/tasks/<source_id>/schedule → Reprograma la tarea y mueve su evento de Calendar
+  DELETE /api/tasks/<source_id>/series → Borra la serie completa (repetida) de una tarea
+  POST /api/tasks/bulk_status          → Completa o restaura varias tareas a la vez
+  GET|POST /api/notes                  → Notas (eventos de día completo en Calendar)
+  PUT|DELETE /api/notes/<id>           → Edita / borra para siempre una nota
+  POST /api/notes/<id>/archive|restore → Archiva / recupera una nota
 """
 
 import os
@@ -24,7 +29,7 @@ from collections import defaultdict
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from modules import db, calendar_sync, sync_pipeline
+from modules import classroom_api, db, calendar_sync, sync_pipeline
 
 app = Flask(__name__, static_folder='static')
 
@@ -34,6 +39,9 @@ NOW_UTC = datetime.datetime.now(datetime.timezone.utc)
 # pipeline al mismo tiempo: ambos podrían no ver todavía la tarea que el otro
 # está a punto de insertar y crear el mismo evento duplicado en Calendar.
 _sync_lock = threading.Lock()
+
+# Cuánto espera una sincronización a que termine otra antes de rendirse.
+SYNC_WAIT_SECONDS = 60
 
 # Tope de eventos que puede crear una sola llamada a /api/manual_task, tanto
 # repitiendo cada N días como marcando días sueltos en el calendario.
@@ -67,7 +75,23 @@ def _calendar_summary(summary: dict) -> dict:
         'calendar_imported': [{'title': t['title'], 'due_date': t['due_date']}
                               for t in summary['calendar_imported']],
         'calendar_updated':  len(summary['calendar_updated']),
+        'notes_imported':    len(summary.get('notes_imported', [])),
+        'notes_updated':     len(summary.get('notes_updated', [])),
+        'notes_archived':    len(summary.get('notes_archived', [])),
+        'notes_failed':      bool(summary.get('notes_failed')),
         'message':           summary['message'],
+    }
+
+
+def _serialize_note(rec: dict) -> dict:
+    return {
+        'id':              rec['id'],
+        'title':           rec.get('title', ''),
+        'body':            rec.get('body', ''),
+        'date':            rec.get('date', ''),
+        'status':          rec.get('status', 'active'),
+        'calendar_synced': bool(rec.get('calendar_event_id')) and not rec.get('needs_push'),
+        'updated_at':      rec.get('updated_at', ''),
     }
 
 
@@ -210,7 +234,17 @@ def reschedule_task(source_id):
     db.update_task_due_date(source_id, new_due)
 
     cal_ok = False
-    if task.get('calendar_event_id'):
+    if not task.get('calendar_event_id'):
+        # Una vencida no tiene evento: si vuelve al futuro, necesita alertas.
+        moved_to_future = (datetime.datetime.fromisoformat(new_due).replace(tzinfo=calendar_sync.local_tz())
+                           > datetime.datetime.now(calendar_sync.local_tz()))
+        if moved_to_future and task.get('status') == 'pending':
+            event_id = calendar_sync.add_task_to_calendar(
+                {**task, 'due_date': new_due}, is_urgent=bool(task.get('is_urgent')))
+            if event_id:
+                db.update_calendar_event_id(source_id, event_id)
+                cal_ok = True
+    else:
         # Para las notas que el usuario creó en Google Calendar la fecha
         # guardada es la de inicio del evento; para las tareas que crea la app,
         # el vencimiento (el evento termina ahí).
@@ -310,6 +344,7 @@ def add_manual_task():
     # por intervalo o marcando días sueltos en el calendario.
     recurrence_group = f'manual_{batch_id}' if len(occurrences) > 1 else ''
     created = []
+    calendar_failed = 0
 
     db.init_db()
 
@@ -331,6 +366,8 @@ def add_manual_task():
         }
 
         event_id = calendar_sync.add_task_to_calendar(task, is_urgent=is_urgent, reminder_minutes=reminder_minutes)
+        if not event_id:
+            calendar_failed += 1
 
         db.mark_task_as_synced(
             source_id=task['source_id'],
@@ -346,7 +383,7 @@ def add_manual_task():
         )
         created.append(source_id)
 
-    return jsonify({'success': True, 'created': created})
+    return jsonify({'success': True, 'created': created, 'calendar_failed': calendar_failed})
 
 
 @app.route('/api/tasks/<path:source_id>', methods=['DELETE'])
@@ -363,6 +400,54 @@ def delete_task_api(source_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/tasks/<path:source_id>/series', methods=['DELETE'])
+def delete_series_api(source_id):
+    """
+    Elimina la serie completa a la que pertenece una tarea.
+
+    - Serie importada de Google Calendar (un evento repetido que el usuario
+      creó allá): se borra el evento *maestro*, lo que cancela todas sus
+      ocurrencias en Calendar, pasadas y futuras. El maestro se obtiene
+      leyendo `recurringEventId` de la instancia en la API, nunca adivinándolo
+      por el formato del id.
+    - Serie creada desde el dashboard (varias fechas creadas de una vez): se
+      borra el evento de cada ocurrencia pendiente.
+    En ambos casos se quitan del tablero las ocurrencias pendientes; las ya
+    completadas se quedan en el historial.
+    """
+    task = db.get_task_by_source_id(source_id)
+    if not task:
+        return jsonify({'error': 'Tarea no encontrada'}), 404
+
+    group = task.get('recurrence_group') or ''
+
+    if task.get('source') == sync_pipeline.CALENDAR_SOURCE:
+        event = calendar_sync.get_event(task['calendar_event_id']) if task.get('calendar_event_id') else None
+        master_id = (event or {}).get('recurringEventId')
+        if not master_id:
+            return jsonify({'error': 'Este evento de Calendar no forma parte de una serie repetida.'}), 400
+        if not calendar_sync.delete_calendar_event(master_id):
+            return jsonify({'error': 'Google Calendar no dejó borrar la serie. Intenta de nuevo.'}), 502
+
+        rows = {r['source_id']: r for r in db.get_all_synced(source_id_prefix=f'calendar_{master_id}_')}
+        for r in db.get_tasks_in_group(sync_pipeline.CALENDAR_SERIES_PREFIX + master_id):
+            rows[r['source_id']] = r
+        for sid in rows:
+            db.delete_task(sid)
+        return jsonify({'success': True, 'deleted': sorted(rows)})
+
+    if not group or task.get('source') == 'classroom':
+        return jsonify({'error': 'Esta tarea no forma parte de una serie.'}), 400
+
+    deleted = []
+    for rec in db.get_tasks_in_group(group):
+        if rec.get('calendar_event_id'):
+            calendar_sync.delete_calendar_event(rec['calendar_event_id'])
+        db.delete_task(rec['source_id'])
+        deleted.append(rec['source_id'])
+    return jsonify({'success': True, 'deleted': sorted(deleted)})
+
+
 @app.route('/api/tasks/completed')
 def get_completed_tasks():
     """Devuelve las tareas completadas, ordenadas por fecha."""
@@ -376,55 +461,171 @@ def get_completed_tasks():
     return jsonify({'tasks': result})
 
 
+def _apply_status(task: dict, new_status: str) -> None:
+    """Cambia el estado de una tarea y su evento de Calendar.
+
+    Al devolverla a pendientes solo se recrea el evento si vence en el futuro:
+    una atrasada no lo merece (igual que en la sincronización), y deshacer
+    varias de golpe llenaría el calendario de entregas en días ya pasados.
+    """
+    source_id = task['source_id']
+    # Se puede restaurar cualquier tarea: si era de Classroom y sí está entregada,
+    # la siguiente sincronización la vuelve a retirar.
+    db.update_task_status(source_id, new_status, completed_by='user' if new_status == 'completed' else '')
+    event_id = task.get('calendar_event_id')
+
+    if new_status == 'completed':
+        # Si Calendar falla se conserva el id: la sincronización lo reintenta.
+        if event_id and calendar_sync.delete_calendar_event(event_id):
+            db.update_calendar_event_id(source_id, '')
+        return
+
+    due = sync_pipeline._due_datetime(task)
+    if event_id or not due or due <= datetime.datetime.now(calendar_sync.local_tz()):
+        return
+    new_event_id = calendar_sync.add_task_to_calendar(task, is_urgent=bool(task.get('is_urgent')))
+    if new_event_id:
+        db.update_calendar_event_id(source_id, new_event_id)
+
+
 @app.route('/api/tasks/<path:source_id>/status', methods=['PUT'])
 def update_task_status_api(source_id):
     """Marca o desmarca una tarea como completada."""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     new_status = data.get('status')
-    
     if new_status not in ['pending', 'completed']:
         return jsonify({'error': 'Invalid status'}), 400
 
     task = db.get_task_by_source_id(source_id)
     if not task:
         return jsonify({'error': 'Tarea no encontrada'}), 404
-        
-    # Prevent unmarking classroom tasks to avoid loop conflicts
-    if new_status == 'pending' and task.get('source') == 'classroom':
-        return jsonify({'error': 'Las tareas de Classroom no se pueden desmarcar manualmente.'}), 400
 
-    db.update_task_status(source_id, new_status)
+    _apply_status(task, new_status)
+    return jsonify({'success': True, 'status': new_status, 'source_id': source_id})
 
-    # Calendar logic
-    event_id = task.get('calendar_event_id')
-    
-    if new_status == 'completed':
-        if event_id:
-            calendar_sync.delete_calendar_event(event_id)
-            db.update_calendar_event_id(source_id, '')
-    else:
-        # Re-create event in calendar
-        new_event_id = calendar_sync.add_task_to_calendar(task, is_urgent=bool(task.get('is_urgent')))
-        if new_event_id:
-            db.update_calendar_event_id(source_id, new_event_id)
 
-    return jsonify({
-        'success': True,
-        'status': new_status,
-        'source_id': source_id,
-    })
+@app.route('/api/tasks/bulk_status', methods=['POST'])
+def bulk_status_api():
+    """Completa (o devuelve a pendientes) varias tareas de una vez. Responde
+    tarea por tarea: que falle una no deshace las demás."""
+    data = request.get_json(silent=True) or {}
+    new_status = data.get('status')
+    ids = data.get('ids')
+    if new_status not in ['pending', 'completed']:
+        return jsonify({'error': 'Invalid status'}), 400
+    if not isinstance(ids, list) or not ids:
+        return jsonify({'error': 'Se espera una lista "ids" con al menos una tarea'}), 400
+
+    results = []
+    for source_id in dict.fromkeys(str(i) for i in ids):
+        task = db.get_task_by_source_id(source_id)
+        if not task:
+            results.append({'id': source_id, 'ok': False, 'error': 'Tarea no encontrada'})
+            continue
+        try:
+            _apply_status(task, new_status)
+            results.append({'id': source_id, 'ok': True})
+        except Exception as e:
+            results.append({'id': source_id, 'ok': False, 'error': str(e)})
+    return jsonify({'status': new_status, 'results': results})
+
+
+# ── Notas ──────────────────────────────────────────────────────────────────────
+
+def _note_payload(data: dict, partial: bool = False):
+    """Valida título, texto y día. Devuelve (campos, error)."""
+    fields = {}
+    if 'title' in data or not partial:
+        title = str(data.get('title') or '').strip()
+        if not title:
+            return None, 'La nota necesita un título'
+        fields['title'] = title[:200]
+    if 'body' in data or not partial:
+        fields['body'] = str(data.get('body') or '').strip()
+    if 'date' in data or not partial:
+        day = str(data.get('date') or '').strip()
+        try:
+            datetime.date.fromisoformat(day)
+        except ValueError:
+            return None, 'Fecha inválida, se espera YYYY-MM-DD'
+        fields['date'] = day
+    return fields, None
+
+
+@app.route('/api/notes')
+def list_notes_api():
+    db.init_db()
+    active = sorted(db.list_notes('active'), key=lambda n: (n['date'], n['updated_at']))
+    archived = sorted(db.list_notes('archived'), key=lambda n: n['updated_at'], reverse=True)
+    return jsonify({'notes': [_serialize_note(n) for n in active],
+                    'archived': [_serialize_note(n) for n in archived]})
+
+
+@app.route('/api/notes', methods=['POST'])
+def create_note_api():
+    fields, error = _note_payload(request.get_json(silent=True) or {})
+    if error:
+        return jsonify({'error': error}), 400
+    db.init_db()
+    note = db.create_note(sync_pipeline.new_note_id(), **fields)
+    synced = sync_pipeline.push_note(note)
+    return jsonify({'note': _serialize_note(db.get_note(note['id'])), 'calendar_synced': synced})
+
+
+@app.route('/api/notes/<note_id>', methods=['PUT'])
+def update_note_api(note_id):
+    note = db.get_note(note_id)
+    if not note:
+        return jsonify({'error': 'Nota no encontrada'}), 404
+    fields, error = _note_payload(request.get_json(silent=True) or {}, partial=True)
+    if error:
+        return jsonify({'error': error}), 400
+    note = db.update_note(note_id, **fields)
+    synced = note['status'] == 'active' and sync_pipeline.push_note(note)
+    return jsonify({'note': _serialize_note(db.get_note(note_id)), 'calendar_synced': synced})
+
+
+@app.route('/api/notes/<note_id>/archive', methods=['POST'])
+def archive_note_api(note_id):
+    """Quita la nota de la vista y de Calendar, pero la guarda en Archivadas.
+    Si Calendar no deja borrar el evento, la sincronización lo reintenta."""
+    note = db.get_note(note_id)
+    if not note:
+        return jsonify({'error': 'Nota no encontrada'}), 404
+    event_id = note.get('calendar_event_id')
+    gone = not event_id or calendar_sync.delete_calendar_event(event_id)
+    db.update_note(note_id, status='archived', needs_push=False,
+                   **({'calendar_event_id': ''} if gone else {}))
+    return jsonify({'note': _serialize_note(db.get_note(note_id)), 'calendar_synced': gone})
+
+
+@app.route('/api/notes/<note_id>/restore', methods=['POST'])
+def restore_note_api(note_id):
+    note = db.get_note(note_id)
+    if not note:
+        return jsonify({'error': 'Nota no encontrada'}), 404
+    note = db.update_note(note_id, status='active')
+    synced = sync_pipeline.push_note(note)
+    return jsonify({'note': _serialize_note(db.get_note(note_id)), 'calendar_synced': synced})
+
+
+@app.route('/api/notes/<note_id>', methods=['DELETE'])
+def delete_note_api(note_id):
+    """Borra la nota para siempre. Si su evento sigue en Calendar y no se
+    puede borrar, no se toca nada: si no, volvería a importarse sola."""
+    note = db.get_note(note_id)
+    if not note:
+        return jsonify({'error': 'Nota no encontrada'}), 404
+    event_id = note.get('calendar_event_id')
+    if event_id and not calendar_sync.delete_calendar_event(event_id):
+        return jsonify({'error': 'Google Calendar no dejó borrar el evento. Intenta de nuevo.'}), 502
+    db.delete_note(note_id)
+    return jsonify({'success': True})
 
 
 @app.route('/api/sync/calendar', methods=['POST'])
 def sync_calendar_only():
-    """
-    Media sincronización: solo Calendar → local (Pasos 1a y 1b del pipeline).
-
-    El dashboard la dispara al abrirse para que las notas que el usuario
-    escribió desde el celular aparezcan sin tener que tocar nada. Se deja fuera
-    Classroom a propósito: esa consulta es la lenta, y sigue en el botón de
-    sincronizar.
-    """
+    """Solo Calendar → local, para el dashboard clásico. El de React usa /api/verify."""
     if not _sync_lock.acquire(blocking=False):
         return jsonify({'error': 'Ya hay una sincronización en curso, espera a que termine.'}), 409
 
@@ -442,17 +643,21 @@ def sync_calendar_only():
 def verify_and_sync():
     """
     Dispara el pipeline de 4 pasos (modules/sync_pipeline.py), compartido con
-    main.py, y devuelve el resumen para el dashboard:
-      1. Calendar → local (sana eventos borrados a mano)
-      2. Local → Classroom (descarga tareas pendientes)
-      3. Diff Classroom vs. local (crea solo lo nuevo, retira lo entregado)
-      4. Reporte / mensaje de "sincronización completa"
+    main.py, y devuelve el resumen para el dashboard. El tablero lo llama solo
+    al abrirse y al volver a la pestaña, además de desde el botón.
+
+    Espera su turno en vez de rechazar al instante: pulsar "Sincronizar" justo
+    después de abrir la página debe funcionar, no devolver un error.
     """
-    if not _sync_lock.acquire(blocking=False):
+    if not _sync_lock.acquire(timeout=SYNC_WAIT_SECONDS):
         return jsonify({'error': 'Ya hay una sincronización en curso, espera a que termine.'}), 409
 
     try:
         summary = sync_pipeline.run_full_sync()
+    except classroom_api.ClassroomUnavailable as e:
+        return jsonify({'error': f'Google Classroom no respondió: {e}'}), 502
+    except Exception as e:
+        return jsonify({'error': f'No se pudo sincronizar: {e}'}), 502
     finally:
         _sync_lock.release()
 
@@ -461,12 +666,13 @@ def verify_and_sync():
         'classroom_total':  summary['classroom_total'],
         'already_synced':   summary['already_synced'],
         'new_synced':       len(summary['synced']),
-        'skipped':          [{'title': t['title'], 'course': t.get('course_name', ''),
-                               'reason': 'Sin fecha' if reason == 'sin_fecha' else 'Ya venció'}
-                              for t, reason in summary['skipped']],
         'errors':           [{'title': t['title'], 'course': t.get('course_name', '')} for t in summary['errors']],
         'synced_tasks':     [{'title': t['title'], 'course': t.get('course_name', '')} for t in summary['synced']],
         'completed_count':  len(summary['completed']),
+        'reopened':         [{'title': t['title']} for t in summary['reopened']],
+        'rescheduled':      [{'title': t['title']} for t in summary['rescheduled']],
+        'board_only':       [{'title': t['title']} for t in summary['board_only']],
+        'failed_courses':   summary['failed_courses'],
     })
 
 

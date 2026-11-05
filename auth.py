@@ -1,4 +1,5 @@
 import os
+import threading
 
 # Evitar errores si Google devuelve los permisos en distinto orden o falta alguno temporalmente
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
@@ -20,8 +21,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TOKEN_PATH = os.path.join(BASE_DIR, 'token.json')
 CREDS_PATH = os.path.join(BASE_DIR, 'credentials.json')
 
+# El servidor atiende peticiones en paralelo: sin esto, dos hilos podrían
+# renovar el token a la vez y pisarse al escribir token.json.
+_token_lock = threading.Lock()
+
 def get_credentials():
     """Obtiene las credenciales válidas o inicia el flujo OAuth2 en el navegador."""
+    with _token_lock:
+        return _load_credentials()
+
+def _load_credentials():
     creds = None
     # El archivo token.json almacena los tokens de acceso y actualización de la sesión.
     if os.path.exists(TOKEN_PATH):

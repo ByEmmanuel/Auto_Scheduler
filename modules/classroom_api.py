@@ -7,6 +7,9 @@ import datetime
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import auth
 
+# Estados en los que el alumno ya no debe nada: entregada, o devuelta/calificada.
+SUBMITTED_STATES = ('TURNED_IN', 'RETURNED')
+
 def get_classroom_service():
     creds = auth.get_credentials()
     return build('classroom', 'v1', credentials=creds)
@@ -38,83 +41,97 @@ def parse_due_date(due_date_obj, due_time_obj):
         print(f"Error parseando fecha: {e}")
         return None
 
+class ClassroomUnavailable(Exception):
+    """Classroom no respondió: no se sabe nada, y nada debe darse por entregado."""
+
+
+def _all_pages(request, key):
+    """Recorre todas las páginas de un listado de la API."""
+    items, token = [], None
+    while True:
+        response = request(pageToken=token).execute()
+        items.extend(response.get(key, []))
+        token = response.get('nextPageToken')
+        if not token:
+            return items
+
+
 def fetch_pending_tasks():
-    service = get_classroom_service()
-    
-    pending_tasks = []
-    
-    # 1. Obtener los cursos activos del estudiante
+    """
+    Lee de Classroom lo que el alumno aún debe, curso por curso.
+
+    Devuelve las tareas pendientes, cuántos cursos activos hay y los cursos que
+    no se pudieron leer. La distinción importa: que una tarea no venga en la
+    lista significa "ya no se debe" solo si su curso se leyó completo, nunca si
+    la consulta falló. Sin los cursos ni siquiera se sigue.
+    """
     try:
-        courses_result = service.courses().list(studentId='me', courseStates=['ACTIVE']).execute()
-        courses = courses_result.get('courses', [])
+        service = get_classroom_service()
+        courses = _all_pages(
+            lambda **page: service.courses().list(studentId='me', courseStates=['ACTIVE'], **page),
+            'courses',
+        )
     except Exception as e:
-        print(f"Error obteniendo cursos: {e}")
-        return []
+        raise ClassroomUnavailable(str(e)) from e
+
+    pending_tasks = []
+    failed_courses = {}
 
     for course in courses:
         course_id = course['id']
         course_name = course['name']
-        
-        # 2. Obtener las tareas del curso
+
         try:
-            coursework_result = service.courses().courseWork().list(courseId=course_id).execute()
-            courseworks = coursework_result.get('courseWork', [])
+            courseworks = _all_pages(
+                lambda **page: service.courses().courseWork().list(courseId=course_id, **page),
+                'courseWork',
+            )
+            # `-` trae las entregas de todo el curso en una sola consulta, en
+            # vez de una por tarea: es lo que permite sincronizar al abrir.
+            submissions = _all_pages(
+                lambda **page: service.courses().courseWork().studentSubmissions().list(
+                    courseId=course_id, courseWorkId='-', userId='me', **page),
+                'studentSubmissions',
+            )
         except Exception as e:
-            print(f"Error obteniendo tareas del curso {course_name}: {e}")
+            print(f"Error leyendo el curso {course_name}: {e}")
+            failed_courses[course_id] = course_name
             continue
-            
+
+        by_work = {}
+        for sub in submissions:
+            by_work.setdefault(sub.get('courseWorkId'), []).append(sub)
+
         for cw in courseworks:
             cw_id = cw['id']
-            title = cw.get('title', 'Sin título')
-            description = cw.get('description', '')
-            
-            # 3. Verificar el estado de entrega (submissions)
-            try:
-                submissions_result = service.courses().courseWork().studentSubmissions().list(
-                    courseId=course_id,
-                    courseWorkId=cw_id,
-                    userId='me'
-                ).execute()
-                submissions = submissions_result.get('studentSubmissions', [])
+            own = by_work.get(cw_id, [])
+            # Sin entrega registrada, o sin entregar ni calificar: está pendiente.
+            if any(sub.get('state') in SUBMITTED_STATES for sub in own):
+                continue
 
-                # Si no hay entregas, o si el estado no es entregado/calificado, está pendiente
-                is_submitted = False
-                submission_id = ''
-                submission_state = ''
-                if submissions:
-                    submission_id = submissions[0].get('id', '')
-                    submission_state = submissions[0].get('state', '')
-                for sub in submissions:
-                    state = sub.get('state')
-                    if state in ['TURNED_IN', 'RETURNED']:
-                        is_submitted = True
-                        break
+            pending_tasks.append({
+                'source_id': f"classroom_{cw_id}",
+                'title': cw.get('title', 'Sin título'),
+                'course_name': course_name,
+                'due_date': parse_due_date(cw.get('dueDate'), cw.get('dueTime')),
+                'description': cw.get('description', ''),
+                'source': 'classroom',
+                'link': cw.get('alternateLink', ''),
+                'course_id': course_id,
+                'coursework_id': cw_id,
+                'submission_id': own[0].get('id', '') if own else '',
+                'submission_state': own[0].get('state', '') if own else '',
+            })
 
-                if not is_submitted:
-                    due_date = parse_due_date(cw.get('dueDate'), cw.get('dueTime'))
-
-                    pending_tasks.append({
-                        'source_id': f"classroom_{cw_id}",
-                        'title': title,
-                        'course_name': course_name,
-                        'due_date': due_date,
-                        'description': description,
-                        'source': 'classroom',
-                        'link': cw.get('alternateLink', ''),
-                        'course_id': course_id,
-                        'coursework_id': cw_id,
-                        'submission_id': submission_id,
-                        'submission_state': submission_state,
-                    })
-                    
-            except Exception as e:
-                print(f"Error verificando entrega para {title}: {e}")
-                
-    return pending_tasks
+    return {
+        'tasks': pending_tasks,
+        'course_count': len(courses),
+        'failed_courses': failed_courses,
+    }
 
 if __name__ == '__main__':
     print("Extrayendo tareas pendientes de Google Classroom...")
-    tasks = fetch_pending_tasks()
+    tasks = fetch_pending_tasks()['tasks']
     for t in tasks:
         print(f"- {t['title']} ({t['course_name']}) | Vence: {t['due_date']}")
     print(f"Total pendientes: {len(tasks)}")

@@ -2,6 +2,43 @@
 
 Historial de cambios del proyecto Auto Scheduler. Orden cronológico inverso (más reciente arriba).
 
+## [Sin publicar] — 2026-11-05
+
+Notas sincronizadas con Google Calendar y completar varias atrasadas a la vez.
+
+- **Añadido:** pestaña "Notas" (Tablero | Notas en la barra). Cada nota es en
+  Calendar un evento de día completo «📝 título», amarillo, sin alertas y
+  marcado como disponible. Se sincroniza en los dos sentidos: lo editado en
+  Calendar se trae, borrarla allá la manda a Archivadas (de donde se recupera)
+  y un evento escrito en el celular como «📝 …» o «Nota: …» entra como nota.
+- **Añadido:** en "Atrasadas", "Seleccionar varias" → "Completar N tareas". El
+  aviso lista cada tarea con su propio "Devolver", además de "Deshacer todas".
+- **Cambiado:** el tipo "Nota" sale del compositor de tareas: ahora es la
+  pestaña Notas.
+- **Cambiado:** devolver una tarea a pendientes solo recrea su evento si vence
+  en el futuro; una atrasada ya no deja una entrega en un día pasado.
+
+## [Sin publicar] — 2026-11-01
+
+Sincronización automática y confiable, resumen de bienvenida y etapa navideña.
+
+- **Añadido:** resumen de bienvenida con lo de hoy, lo atrasado y lo que sigue,
+  separado por Classroom y Manuales. El botón ☀ de la barra lo reabre.
+- **Añadido:** etapa navideña del 1 de noviembre al 6 de enero (nieve, guirnalda
+  y emojis en tarjetas y columnas), con el botón ❄ para apagarla.
+- **Añadido:** "Mi árbol" (clic en el arbolito de la barra): cada tarea terminada
+  es una esfera del color de su materia, la estrella solo se enciende sin
+  atrasadas y se muestra cuánto falta antes de Navidad. Terminar una tarea hace
+  cruzar el trineo, los copos se apartan del cursor y la nieve del suelo sube
+  conforme se acerca el 25 de diciembre.
+- **Cambiado:** el tablero corre el pipeline completo al abrirse y al volver a
+  la pestaña (primero Calendar, después Classroom), no solo con el botón.
+- **Cambiado:** cualquier tarea completada, también de Classroom, se puede
+  devolver a pendientes desde el historial o con "Deshacer".
+- **Cambiado:** borrar en Google Calendar el evento de una tarea manual la manda
+  al historial; mover un evento de la app mueve también la tarea.
+- **Corregido:** ver la sección de 2026-11-01 en `KNOWN_ISSUES.md`.
+
 ## [Sin publicar] — 2026-09-13
 
 El dashboard de React pasa a ser la página principal y el resultado de la
